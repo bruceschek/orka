@@ -1,0 +1,64 @@
+# Orka watchlist: the only projects Orka monitors.
+# Orka finds each folder by its number prefix (for example "0071-*"),
+# so a project still matches after you rename the rest of its folder name.
+# Add "path = ..." to an entry only if you want to pin an exact folder.
+#
+# Fields:
+#   id      four-digit project number (required)
+#   alias   short names you can use when you talk to Orka
+#   machine "mba" or "mbp" (or a list, for a project on both Macs)
+#   status  "active" or "paused" (paused = monitored but no alerts)
+
+[[project]]
+id      = "0046"
+alias   = ["primality"]
+machine = "mba"
+status  = "active"
+
+[[project]]
+id      = "0062"
+alias   = ["memory", "memoryapp"]
+machine = "mba"
+status  = "active"
+
+[[project]]
+id      = "0071"
+alias   = ["contacts", "xmas cards"]
+machine = "mba"
+status  = "active"
+
+[[project]]
+id      = "0073"
+alias   = ["photos", "dedupe"]
+machine = "mba"
+status  = "active"
+
+[[project]]
+id      = "0075"
+alias   = ["schechter.com", "website"]
+machine = "mba"
+status  = "active"
+
+[[project]]
+id      = "0083"
+alias   = ["svbig"]
+machine = "mba"
+status  = "active"
+
+[[project]]
+id      = "0085"
+alias   = ["chess"]
+machine = "mba"
+status  = "active"
+
+[[project]]
+id      = "0090"
+alias   = ["nyt", "nyt games"]
+machine = "mba"
+status  = "active"
+
+[[project]]
+id      = "0098"
+alias   = ["pkm-wiki", "universal memory"]
+machine = "mba"
+status  = "active"

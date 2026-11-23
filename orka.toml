@@ -1,0 +1,10 @@
+# Orka host configuration. To move Orka to another Mac, change this file only.
+
+machine = "mba"                          # name of this Mac: "mba" or "mbp"
+projects_root = "~/dev/projects"
+claude_projects_dir = "~/.claude/projects" # Claude Code session logs
+state_dir = "~/.orka"                    # orka.db, scorecard.json, events, logs
+
+[thresholds]
+active_minutes = 15   # activity newer than this = Active
+stale_days     = 14   # no activity for longer than this = Stale
