@@ -5,6 +5,10 @@ projects_root = "~/dev/projects"
 claude_projects_dir = "~/.claude/projects" # Claude Code session logs
 state_dir = "~/dev/.orka"                # orka.db, scorecard.json, events.jsonl (inside ~/dev so Claude can read it)
 
+[serve]
+port = 8765           # dashboard on http://127.0.0.1:<port>; `tailscale serve` publishes it to your devices
+refresh_seconds = 30  # how often the dashboard collects
+
 [thresholds]
 active_minutes = 15   # activity newer than this = Active
 stale_days     = 14   # no activity for longer than this = Stale

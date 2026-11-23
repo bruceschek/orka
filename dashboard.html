@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Orka">
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<title>Orka</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #16181d; --muted: #646b78; --line: #e3e6eb;
+    --wait: #c2410c; --wait-bg: #fff1e8; --active: #15803d; --active-bg: #e9f7ee;
+    --idle: #4b5563; --idle-bg: #eef0f3; --stale: #a16207; --stale-bg: #fdf6e3;
+    --fail: #b91c1c; --fail-bg: #fdecec; --link: #2563eb;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #181b21; --text: #e7e9ee; --muted: #9aa1ad; --line: #2a2f38;
+      --wait: #fb923c; --wait-bg: #3a2416; --active: #4ade80; --active-bg: #15291c;
+      --idle: #aab1bd; --idle-bg: #23272f; --stale: #facc15; --stale-bg: #2f2812;
+      --fail: #f87171; --fail-bg: #3a1a1a; --link: #60a5fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         padding: env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom)); }
+  main { max-width: 760px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 10px; padding: 16px 0 8px; }
+  header h1 { font-size: 22px; margin: 0; }
+  header .meta { color: var(--muted); font-size: 13px; margin-left: auto; text-align: right; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--active);
+         margin-right: 6px; vertical-align: 1px; }
+  .dot.stale { background: var(--fail); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+       margin: 22px 0 8px; }
+  .banner { background: var(--fail-bg); color: var(--fail); border-radius: 10px; padding: 10px 12px;
+            margin: 8px 0; font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 12px 14px; margin: 8px 0; }
+  .card.wait { border-color: var(--wait); }
+  .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .id { font: 600 14px var(--mono); color: var(--muted); }
+  .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .ago { margin-left: auto; color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .pill { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .p-wait { color: var(--wait); background: var(--wait-bg); }
+  .p-active, .p-running, .p-ok { color: var(--active); background: var(--active-bg); }
+  .p-idle, .p-paused, .p-remote, .p-stopped { color: var(--idle); background: var(--idle-bg); }
+  .p-stale, .p-missing { color: var(--stale); background: var(--stale-bg); }
+  .p-failed, .p-not-loaded { color: var(--fail); background: var(--fail-bg); }
+  .line { color: var(--muted); font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; }
+  .line b { color: var(--text); font-weight: 600; }
+  .note { margin-top: 6px; font-size: 14px; overflow-wrap: anywhere; }
+  .wait .note { color: var(--wait); font-weight: 600; }
+  details { margin-top: 6px; }
+  summary { cursor: pointer; color: var(--link); font-size: 14px; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  ul { margin: 6px 0 0; padding-left: 18px; font-size: 14px; }
+  li { margin: 2px 0; overflow-wrap: anywhere; }
+  pre { font: 12px/1.45 var(--mono); background: var(--bg); border-radius: 8px; padding: 8px;
+        margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .empty { color: var(--muted); font-size: 14px; padding: 4px 2px; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Orka</h1>
+    <div class="meta"><span id="dot" class="dot"></span><span id="updated">loading…</span><br><span id="machine"></span></div>
+  </header>
+  <div id="banners"></div>
+  <h2>Needs you</h2>
+  <div id="needs"></div>
+  <h2>Projects</h2>
+  <div id="projects"></div>
+  <h2>Jobs</h2>
+  <div id="jobs"></div>
+  <footer id="footer"></footer>
+</main>
+<script>
+const ORDER = {"Waiting on you": 0, "Active": 1, "Idle": 2, "Stale": 3, "Paused": 4, "Missing": 5, "Remote": 6};
+let card = null, fetchedAt = 0;
+
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) e.setAttribute(k, v);
+  for (const k of kids.flat()) if (k != null && k !== "") e.append(k instanceof Node ? k : String(k));
+  return e;
+}
+const pillClass = s => "pill p-" + String(s).toLowerCase().replace(/ on you$/, "").replace(/\s+/g, "-")
+                                         .replace("waiting", "wait");
+const pill = s => el("span", {class: pillClass(s)}, s);
+const niceName = p => (p.name || "").replace(/^\d{4}-/, "").replace(/\s*\[[a-z]\d+\]$/i, "");
+function line(label, text) { return el("div", {class: "line"}, el("b", {}, label + " "), text); }
+
+function projectCard(p) {
+  const g = p.git || {}, pl = p.plans || {}, s = p.session || {};
+  const c = el("div", {class: "card" + (p.state === "Waiting on you" ? " wait" : "")},
+    el("div", {class: "row"}, el("span", {class: "id"}, p.id), el("span", {class: "name"}, niceName(p) || p.note),
+       el("span", {class: "ago"}, p.last_activity_ago || ""), pill(p.state)));
+  if (p.state === "Waiting on you" || (p.sessions || []).length) c.append(el("div", {class: "note"}, p.note));
+  for (const x of (p.sessions || []).length > 1 ? p.sessions : [])
+    c.append(line("session " + x.id.slice(0, 8), `${x.state} · ${x.last_ago} · ${x.detail}`));
+  const bits = [];
+  if (g.branch !== undefined) bits.push(`${g.commits_24h} commits/24h`, `${g.dirty_files} dirty`);
+  if (g.ahead) bits.push(`${g.ahead} unpushed`);
+  if (pl.files && pl.files.length) bits.push(`${pl.open_items} open items`);
+  if (bits.length) c.append(el("div", {class: "line"}, bits.join(" · ")));
+  if (g.last_commit_subject) c.append(line("last commit", g.last_commit_subject));
+  if (s.todos && s.todos.in_progress.length) c.append(line("doing", s.todos.in_progress[0]));
+  const more = [];
+  if ((pl.needs_you || []).length)
+    more.push(el("div", {class: "line"}, el("b", {}, `Needs you in plans (${pl.needs_you.length})`)),
+              el("ul", {}, pl.needs_you.map(n => el("li", {}, n.item))));
+  if ((pl.next_items || []).length)
+    more.push(el("div", {class: "line"}, el("b", {}, "Next")), el("ul", {}, pl.next_items.map(n => el("li", {}, n))));
+  if (s.last_user_prompt) more.push(line("you last said", s.last_user_prompt));
+  if (s.last_claude_message) more.push(line("Claude last said", s.last_claude_message));
+  if (more.length) {
+    const label = (pl.needs_you || []).length ? `${pl.needs_you.length} waiting in plans · more` : "more";
+    c.append(el("details", {}, el("summary", {}, label), more));
+  }
+  return c;
+}
+
+function jobCard(j) {
+  const c = el("div", {class: "card"},
+    el("div", {class: "row"}, el("span", {class: "name"}, j.id),
+       el("span", {class: "ago"}, j.last_run_ago ? "ran " + j.last_run_ago : (j.machine || "")), pill(j.status)));
+  if (j.status === "failed") c.append(el("div", {class: "note"}, `last exit code ${j.last_exit_code}`));
+  for (const p of j.processes || []) c.append(line("pid " + p.pid, `up ${p.elapsed} · ${p.command}`));
+  const logs = [];
+  if ((j.log_tail || []).length) logs.push(line("log", j.log), el("pre", {}, j.log_tail.join("\n")));
+  if ((j.stderr_tail || []).length) logs.push(line("errors", ""), el("pre", {}, j.stderr_tail.join("\n")));
+  if (logs.length) c.append(el("details", {}, el("summary", {}, "log"), logs));
+  return c;
+}
+
+function render() {
+  if (!card) return;
+  const projects = [...card.projects].sort((a, b) => (ORDER[a.state] ?? 9) - (ORDER[b.state] ?? 9) || a.id.localeCompare(b.id));
+  const jobs = card.jobs || [];
+  const waiting = projects.filter(p => p.state === "Waiting on you");
+  const failed = jobs.filter(j => j.status === "failed" || j.status === "not loaded");
+  const needs = document.getElementById("needs");
+  needs.replaceChildren(...waiting.map(projectCard), ...failed.map(jobCard));
+  if (!needs.children.length) needs.append(el("div", {class: "empty"}, "Nothing is waiting on you."));
+  document.getElementById("projects").replaceChildren(
+    ...projects.filter(p => p.state !== "Waiting on you").map(projectCard));
+  const rest = jobs.filter(j => !failed.includes(j));
+  document.getElementById("jobs").replaceChildren(...(rest.length ? rest.map(jobCard)
+    : [el("div", {class: "empty"}, failed.length ? "All jobs listed above." : "No jobs in jobs.toml.")]));
+  const banners = [];
+  for (const [k, v] of Object.entries(card.self_check || {}))
+    if (v !== true && !(k === "hook_events" && String(v).startsWith("last event")))
+      banners.push(el("div", {class: "banner"}, `${k.replace(/_/g, " ")}: ${v}`));
+  if (card.serve_error) banners.push(el("div", {class: "banner"}, "collector error: " + card.serve_error));
+  document.getElementById("banners").replaceChildren(...banners);
+  document.getElementById("machine").textContent = card.machine;
+  document.getElementById("footer").textContent =
+    `collected ${new Date(card.generated_at).toLocaleString()} · collector ${card.collector_version}` +
+    (card.viewer ? ` · you are ${card.viewer}` : "");
+  tick();
+}
+
+function tick() {
+  if (!card) return;
+  const age = Math.round((Date.now() - new Date(card.generated_at)) / 1000);
+  const stale = Date.now() - fetchedAt > 120000 || age > 300;
+  document.getElementById("dot").className = "dot" + (stale ? " stale" : "");
+  document.getElementById("updated").textContent =
+    stale ? `not updating · ${Math.round(age / 60)}m old` : `updated ${age < 60 ? age + "s" : Math.round(age / 60) + "m"} ago`;
+}
+
+async function load() {
+  try {
+    const r = await fetch("/api/scorecard", {cache: "no-store"});
+    if (r.ok) { card = await r.json(); fetchedAt = Date.now(); render(); }
+    else document.getElementById("updated").textContent = (await r.json()).error || "starting…";
+  } catch (e) { tick(); }
+}
+load();
+setInterval(load, 15000);
+setInterval(tick, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+</script>
+</body>
+</html>

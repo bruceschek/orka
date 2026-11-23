@@ -13,6 +13,8 @@ Usage (from the Orka folder):
   uv run orka.py watch remove 0099
   uv run orka.py watch pause 0099 | resume 0099
   uv run orka.py events [n]         # last n hook events (default 30)
+  uv run orka.py serve              # dashboard on http://127.0.0.1:8765 (phone: tailscale serve)
+  uv run orka.py install-agent [--apply]  # keep `serve` running at login (launchd)
   uv run orka.py install-hooks [--apply]  # add Orka's hook to ~/.claude/settings.json
 
 The collector uses no AI and no tokens. It only reads files, git and processes.
@@ -26,8 +28,10 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 try:
@@ -35,10 +39,12 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "orka.toml"
 WATCHLIST = HERE / "watchlist.toml"
+JOBS = HERE / "jobs.toml"
+DASHBOARD = HERE / "dashboard.html"
 
 PLAN_NAMES = re.compile(
     r"^(plan|todo|backlog|handoff|status|release-status|roadmap|next|tasks|progress)[\w\- ]*\.md$",
@@ -58,7 +64,10 @@ def load_config() -> dict:
     def p(env, key, default):
         return Path(os.path.expanduser(os.environ.get(env) or cfg.get(key) or default))
     th = cfg.get("thresholds", {})
+    sv = cfg.get("serve", {})
     return {
+        "port": int(os.environ.get("ORKA_PORT") or sv.get("port", 8765)),
+        "refresh_s": int(sv.get("refresh_seconds", 30)),
         "machine": cfg.get("machine", "mba"),
         "projects_root": p("ORKA_PROJECTS_ROOT", "projects_root", "~/dev/projects"),
         "claude_dir": p("ORKA_CLAUDE_DIR", "claude_projects_dir", "~/.claude/projects"),
@@ -72,6 +81,12 @@ def load_watchlist() -> list[dict]:
     if not WATCHLIST.exists():
         return []
     return tomllib.loads(WATCHLIST.read_text()).get("project", [])
+
+
+def load_jobs() -> list[dict]:
+    if not JOBS.exists():
+        return []
+    return tomllib.loads(JOBS.read_text()).get("job", [])
 
 
 def resolve_path(entry: dict, root: Path) -> Path | None:
@@ -293,23 +308,103 @@ def live_claude_cwds() -> list[str]:
     return [l[1:] for l in out.splitlines() if l.startswith("n")]
 
 
+def tail_lines(path: Path, n: int = 5) -> list[str]:
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - 8000))
+            lines = fh.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    return [short(l, 200) for l in lines if l.strip()][-n:]
+
+
+def launchd_info(label: str, now: float) -> dict:
+    out = run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], Path("/"))
+    if out is None:
+        return {"status": "not loaded", "running": False}
+    info: dict = {}
+    for line in out.splitlines():
+        if not line.startswith("\t") or line.startswith("\t\t"):
+            continue  # top-level fields only; nested blocks repeat keys like "state"
+        k, sep, v = line.strip().partition(" = ")
+        if sep and k not in info:
+            info[k] = v
+    running = info.get("state") == "running"
+    code = info.get("last exit code", "")
+    log = Path(info["stdout path"]) if info.get("stdout path") else None
+    last_run = log.stat().st_mtime if log and log.exists() else None
+    failed = code not in ("", "0", "(never exited)")
+    return {
+        "status": "running" if running else ("failed" if failed else "ok"),
+        "running": running, "pid": info.get("pid"), "last_exit_code": code or None,
+        "runs": info.get("runs"), "program": info.get("program"),
+        "last_run": iso(last_run), "last_run_ago": ago(last_run, now) if last_run else None,
+        "log": str(log) if log else None, "stderr_log": info.get("stderr path"),
+    }
+
+
+def script_info(pattern: str) -> dict:
+    ps = run(["ps", "-axo", "pid=,etime=,args="], Path("/")) or ""
+    rx = re.compile(pattern)
+    procs = []
+    for line in ps.splitlines():
+        pid, etime, args = (line.strip().split(None, 2) + ["", ""])[:3]
+        if rx.search(args) and int(pid) != os.getpid():
+            procs.append({"pid": pid, "elapsed": etime, "command": short(args, 120)})
+    return {"status": "running" if procs else "stopped", "running": bool(procs), "processes": procs}
+
+
+def job_info(job: dict, now: float) -> dict:
+    rec = {k: job.get(k) for k in ("id", "kind", "machine", "label", "match")}
+    if job.get("kind") == "launchd":
+        rec.update(launchd_info(job["label"], now))
+    elif job.get("kind") == "script":
+        rec.update(script_info(job["match"]))
+    else:
+        rec.update(status="unknown kind", running=False)
+    log = job.get("log") or rec.get("log")
+    if log:
+        rec["log"] = os.path.expanduser(log)
+        rec["log_tail"] = tail_lines(Path(rec["log"]))
+    err = rec.get("stderr_log")
+    if err:
+        rec["stderr_tail"] = tail_lines(Path(err), 3)
+    return rec
+
+
 # ---------------------------------------------------------------- hook events (phase 2)
 APPROVAL = re.compile(r"permission|approv", re.I)
 SESSION_TTL = 48 * 3600  # forget a session after this long with no events (missed SessionEnd)
 WORKING_TTL = 3600       # "working" with no event for this long is no longer trusted
 
 
-def read_events(state_dir: Path, max_bytes: int = 2_000_000) -> list[dict]:
+EVENTS_MAX = 5_000_000  # rotate events.jsonl to events.1.jsonl beyond this size
+
+
+def rotate_events(state_dir: Path) -> None:
+    """Keep the log small. Renaming is safe while hooks write: each hook call
+    opens the file by name, so the next event simply starts a new file."""
     f = state_dir / "events.jsonl"
-    if not f.is_file():
-        return []
-    with f.open("rb") as fh:
-        fh.seek(0, 2)
-        size = fh.tell()
-        fh.seek(max(0, size - max_bytes))
-        lines = fh.read().decode("utf-8", errors="replace").splitlines()
-    if size > max_bytes:
-        lines = lines[1:]  # first line may be cut in half
+    try:
+        if f.stat().st_size > EVENTS_MAX:
+            os.replace(f, state_dir / "events.1.jsonl")
+    except OSError:
+        pass
+
+
+def read_events(state_dir: Path, max_bytes: int = 2_000_000) -> list[dict]:
+    lines: list[str] = []
+    for name in ("events.1.jsonl", "events.jsonl"):  # older file first
+        f = state_dir / name
+        if not f.is_file():
+            continue
+        with f.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - max_bytes))
+            part = fh.read().decode("utf-8", errors="replace").splitlines()
+        lines += part[1:] if size > max_bytes else part  # first line may be cut in half
     out = []
     for line in lines:
         try:
@@ -405,6 +500,7 @@ def decide_state(entry, live, git, sess, files_ts, cfg, now, hsess=None) -> tupl
 def collect(cfg: dict) -> dict:
     now = time.time()
     cwds = live_claude_cwds()
+    rotate_events(cfg["state_dir"])
     events = read_events(cfg["state_dir"])
     sessions = hook_sessions(events)
     projects = []
@@ -442,16 +538,22 @@ def collect(cfg: dict) -> dict:
                             else "none yet (hooks not installed?)"),
         },
         "projects": projects,
+        "jobs": [job_info(j, now) if j.get("machine", cfg["machine"]) == cfg["machine"]
+                 else {"id": j.get("id"), "kind": j.get("kind"), "machine": j.get("machine"),
+                       "status": "remote", "running": False}
+                 for j in load_jobs()],
     }
 
 
-def save(card: dict, cfg: dict) -> Path:
+def save(card: dict, cfg: dict, snapshot: bool = True) -> Path:
     sd = cfg["state_dir"]
     sd.mkdir(parents=True, exist_ok=True)
     out = sd / "scorecard.json"
     tmp = sd / "scorecard.json.tmp"
     tmp.write_text(json.dumps(card, indent=2, default=str))
     os.replace(tmp, out)  # atomic: Orka never reads a half-written file
+    if not snapshot:
+        return out
     db = sqlite3.connect(sd / "orka.db")
     db.execute("""CREATE TABLE IF NOT EXISTS snapshot(
         ts TEXT, id TEXT, state TEXT, last_activity TEXT, dirty INTEGER,
@@ -499,6 +601,13 @@ def show(card: dict) -> None:
         s = p.get("session") or {}
         if s.get("todos") and s["todos"]["in_progress"]:
             print(f"       doing: {s['todos']['in_progress'][0]}")
+    if card.get("jobs"):
+        print("\nJobs")
+        for j in card["jobs"]:
+            extra = (f"last run {j['last_run_ago']}" if j.get("last_run_ago")
+                     else ", ".join(f"pid {p['pid']} up {p['elapsed']}" for p in j.get("processes", [])))
+            code = f", exit {j['last_exit_code']}" if j.get("status") == "failed" else ""
+            print(f"  {j['id']:<20} {j['status']:<10} {extra}{code}")
 
 
 # ---------------------------------------------------------------- watch
@@ -580,6 +689,115 @@ def install_hooks(apply: bool) -> None:
     print(f"Done. Backup of the old file: {backup}\nNew sessions report to Orka; restart open ones to include them.")
 
 
+# ---------------------------------------------------------------- serve (phase 3)
+SNAPSHOT_EVERY = 600  # seconds between orka.db history rows while serving
+
+
+def serve(cfg: dict) -> None:
+    """Dashboard + JSON API on 127.0.0.1 only. Read-only in phase 3.
+
+    Reach it from other devices with `tailscale serve --bg <port>`, which adds
+    HTTPS and lets only your own tailnet devices in.
+    """
+    state = {"card": None, "error": None}
+    lock = threading.Lock()
+
+    def refresher() -> None:
+        last_snap = 0.0
+        while True:
+            try:
+                card = collect(cfg)
+                snap = time.time() - last_snap > SNAPSHOT_EVERY
+                save(card, cfg, snapshot=snap)
+                last_snap = time.time() if snap else last_snap
+                with lock:
+                    state.update(card=card, error=None)
+            except Exception as e:  # keep serving the last good card
+                with lock:
+                    state["error"] = f"{type(e).__name__}: {e}"
+            time.sleep(cfg["refresh_s"])
+
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, code: int, body: bytes, ctype: str) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path == "/":
+                self._send(200, DASHBOARD.read_bytes(), "text/html; charset=utf-8")
+            elif path == "/api/scorecard":
+                with lock:
+                    card, err = state["card"], state["error"]
+                if card is None:
+                    self._send(503, json.dumps({"error": err or "first collect still running"}).encode(),
+                               "application/json")
+                else:
+                    body = dict(card, serve_error=err,
+                                viewer=self.headers.get("Tailscale-User-Login"))
+                    self._send(200, json.dumps(body, default=str).encode(), "application/json")
+            elif path == "/api/health":
+                self._send(200, b'{"ok": true}', "application/json")
+            else:
+                self._send(404, b"not found", "text/plain")
+
+        def log_message(self, *args) -> None:  # quiet
+            pass
+
+    threading.Thread(target=refresher, daemon=True).start()
+    srv = ThreadingHTTPServer(("127.0.0.1", cfg["port"]), Handler)
+    print(f"Orka dashboard on http://127.0.0.1:{cfg['port']}  (Ctrl-C to stop)")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+def install_agent(cfg: dict, apply: bool) -> None:
+    """Run `orka.py serve` at login and keep it running, as a launchd agent.
+
+    Run it yourself (it writes to ~/Library/LaunchAgents). Without --apply it only shows the plan.
+    """
+    import plistlib
+    import shutil
+    label = f"com.{os.environ.get('USER', 'user')}.orka"
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    uv = shutil.which("uv")
+    if not uv:
+        sys.exit("uv not found on PATH")
+    log = cfg["state_dir"] / "serve.log"
+    spec = {
+        "Label": label,
+        "ProgramArguments": [uv, "run", str(HERE / "orka.py"), "serve"],
+        "WorkingDirectory": str(HERE),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": str(log),
+        "StandardErrorPath": str(log),
+        "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
+    }
+    domain = f"gui/{os.getuid()}"
+    print(f"{'Installing' if apply else 'Would install'} launchd agent {label}\n"
+          f"  file:    {plist}\n  runs:    {' '.join(spec['ProgramArguments'])}\n"
+          f"  log:     {log}\n  then:    launchctl bootstrap {domain} {plist}")
+    if not apply:
+        print("Nothing changed. Run again with --apply to install.")
+        return
+    cfg["state_dir"].mkdir(parents=True, exist_ok=True)
+    run(["launchctl", "bootout", f"{domain}/{label}"], Path("/"))  # if already loaded
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_bytes(plistlib.dumps(spec))
+    r = subprocess.run(["launchctl", "bootstrap", domain, str(plist)], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"launchctl bootstrap failed: {r.stderr.strip()}")
+    print(f"Done. Dashboard: http://127.0.0.1:{cfg['port']}\n"
+          f"For your phone: tailscale serve --bg {cfg['port']}")
+
+
 def show_events(cfg: dict, n: int) -> None:
     for ev in read_events(cfg["state_dir"])[-n:]:
         when = datetime.fromtimestamp(ev.get("ts", 0)).strftime("%m-%d %H:%M:%S")
@@ -597,6 +815,10 @@ def main() -> None:
     cfg = load_config()
     if args[0] == "events":
         return show_events(cfg, int(args[1]) if len(args) > 1 else 30)
+    if args[0] == "serve":
+        return serve(cfg)
+    if args[0] == "install-agent":
+        return install_agent(cfg, "--apply" in args)
     card = collect(cfg)
     out = save(card, cfg)
     if args[0] == "show":

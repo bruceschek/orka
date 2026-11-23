@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Orka is a read-only monitor for the other Claude Code projects on Bruce's Mac. It produces one scorecard (state, recent progress, blockers per project). Phases 1 (collector + scorecard) and 2 (hooks + event log) are built; phases 3–6 (Orka session, alerts, nudges, MBP move) are listed in `README.md`.
+Orka is a read-only monitor for the other Claude Code projects on Bruce's Mac. It produces one scorecard (state, recent progress, blockers per project). Phases 1 (collector), 2 (hooks + event log) and 3 (read-only dashboard, jobs, `/scorecard`) are built. The goal is a phone dashboard covering Claude sessions and other jobs on both Macs (MBA and M1), with controls; phases 4–6 are in `README.md`.
 
 The collector uses no AI and no tokens: it only reads files, git and processes. Keep it that way.
 
@@ -18,6 +18,8 @@ uv run orka.py collect           # collect, write ~/dev/.orka/scorecard.json + o
 uv run orka.py watch list|add <id> [aliases] [--machine mbp] [--paused]|remove <id>|pause <id>|resume <id>
 uv run orka.py events [n]        # last n hook events
 uv run orka.py install-hooks [--apply]   # Bruce runs this, not Claude (see below)
+uv run orka.py serve             # dashboard; test on another port with ORKA_PORT=8799
+uv run orka.py install-agent [--apply]   # launchd agent for serve; Bruce runs this too
 ```
 
 Claude may not edit `~/.claude/settings.json` (the auto-mode classifier blocks self-modifying permissions/hooks) and Bruce's auto mode blocks file access outside `~/dev`. That is why `state_dir` is `~/dev/.orka`, not `~/.orka`. Test with `ORKA_STATE_DIR` pointing at a scratch folder so real data stays clean, and for `install-hooks` set `HOME` to a fake home.
@@ -36,4 +38,7 @@ All logic lives in `orka.py`, in this order: config → helpers → sensors → 
 - **Hooks (phase 2):** `orka_hook.py` runs with the system `/usr/bin/python3` (3.9, stdlib only, so no 3.10+ syntax), appends one JSON line per event to `<state_dir>/events.jsonl`, never prints and always exits 0. It must never store prompts or tool inputs. The collector replays the log (`hook_sessions`) into a per-session state (`working`, `needs_you`, `ready`, `ended`). `project_sessions` keeps sessions whose `cwd` is inside the project, only while a live `claude` process is in that folder (SessionEnd can be missed).
 - **State machine:** `decide_state` goes in priority order: Paused → hook sessions if any (needs_you → Waiting on you, working → Active, else Idle "your turn") → phase 1 guess (live session + pending tool call + quiet >2 min) → Active (<`active_minutes`) → Idle → Stale (>`stale_days`).
 - **Existing hooks:** Bruce's global settings already run `~/.config/iterm2/cc-status` on every event (iTerm status). `install-hooks` adds Orka's hook as a separate group and leaves those alone.
+- **Jobs:** `jobs.toml` lists launchd agents (read via `launchctl print gui/<uid>/<label>`, top-level fields only) and scripts (regex on `ps` args), each with a `machine`. Jobs for the other Mac show as `remote`.
+- **Dashboard:** `serve` runs a background collect every `refresh_seconds`, keeps the last good card in memory, and serves `dashboard.html`, `/api/scorecard` and `/api/health` from `127.0.0.1` only. Phone access is `tailscale serve`, which adds the `Tailscale-User-Login` header (shown as `viewer`). It writes an `orka.db` row only every 10 minutes. The page builds the DOM with `textContent` only; keep it that way, because the data contains project text. Controls (phase 5) must be logged and should check the Tailscale identity.
+- **Event log size:** `rotate_events` renames `events.jsonl` to `events.1.jsonl` beyond 5 MB; `read_events` reads both.
 - **Output:** `scorecard.json` and `orka.db` go to `~/dev/.orka/` (`state_dir`), not into the repo. `.gitignore` excludes `*.db` and `scorecard.json`.

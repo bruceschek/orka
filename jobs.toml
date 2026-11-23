@@ -1,0 +1,21 @@
+# Orka jobs: non-Claude work that Orka reports on (and, from phase 5, controls).
+#
+# Fields:
+#   id       short name shown on the dashboard (required, unique)
+#   kind     "launchd" (a launchctl job) or "script" (a long-running process)
+#   machine  "mba" or "mbp"
+#   label    launchd only: the job's label, as in `launchctl list`
+#   match    script only: regular expression matched against the process command line
+#   log      optional: log file to show the tail of (launchd jobs default to their stdout path)
+
+[[job]]
+id      = "backup-dev"
+kind    = "launchd"
+machine = "mba"
+label   = "com.bruceschechter.backup-dev"
+
+[[job]]
+id      = "tana-vectorsync"
+kind    = "launchd"
+machine = "mba"
+label   = "com.tana.vectorsync"

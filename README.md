@@ -9,7 +9,10 @@ state, recent progress and blockers for each project.
 |---|---|
 | `orka.toml` | Host settings. Change only this file to move Orka to another Mac. |
 | `watchlist.toml` | The projects that Orka monitors. Orka finds each folder by its number. |
-| `orka.py` | Collector and watchlist tool. Uses no AI and no tokens. |
+| `jobs.toml` | Non-Claude jobs Orka reports on: launchd agents and long-running scripts, per Mac. |
+| `orka.py` | Collector, dashboard server and watchlist tool. Uses no AI and no tokens. |
+| `dashboard.html` | The dashboard page that `orka.py serve` shows (phone-first, no outside libraries). |
+| `.claude/skills/scorecard/` | `/scorecard` skill: Claude runs the collector and reports in plain language. |
 | `orka_hook.py` | Hook that Claude Code runs on session events. Adds one line per event to `~/dev/.orka/events.jsonl`. |
 | `~/dev/.orka/` | Runtime data on each Mac: `scorecard.json`, `orka.db`, `events.jsonl`. Inside `~/dev` so Claude can read it. |
 
@@ -24,7 +27,25 @@ uv run orka.py watch remove 0099
 uv run orka.py watch pause 0099  # still monitored, no alerts
 uv run orka.py events            # last 30 hook events (add a number for more)
 uv run orka.py install-hooks     # preview the hook setup; add --apply to install
+uv run orka.py serve             # dashboard on http://127.0.0.1:8765
+uv run orka.py install-agent     # preview keeping `serve` running at login; add --apply to install
 ```
+
+## Dashboard and phone access (phase 3)
+
+`orka.py serve` collects every 30 seconds and serves the dashboard and
+`/api/scorecard` on `127.0.0.1` only. It is read-only. To keep it running, run
+`uv run orka.py install-agent --apply` once (a launchd agent, log in
+`~/dev/.orka/serve.log`).
+
+For your phone, publish it to your Tailscale network (never the public internet):
+
+```sh
+tailscale serve --bg 8765
+```
+
+Then open `https://<this-mac>.<your-tailnet>.ts.net` on the phone and use
+Share → Add to Home Screen. Only devices signed in to your tailnet can reach it.
 
 ## Hooks (phase 2)
 
@@ -53,9 +74,12 @@ Projects whose sessions have no hook events fall back to the phase 1 guess.
 
 ## Build phases
 
+Goal: one dashboard, on the phone, that reports on Claude sessions and other
+jobs on both Macs, and lets you control them.
+
 1. Collector and scorecard (done)
-2. Global hooks and event log (this version)
-3. Orka session and `/scorecard` skill
-4. Remote Control, push alerts and daily digest
-5. Nudge with approval
-6. Move to the MBP M1
+2. Global hooks and event log (done)
+3. Read-only dashboard (`serve`) on the MBA, phone access over Tailscale, `jobs.toml`, `/scorecard` skill (this version)
+4. Orka on the M1; each Mac's dashboard also shows the other Mac. Phone alerts for "waiting on you" and failed jobs.
+5. Controls: pause/resume projects; start/stop/restart jobs; open or start a Claude session in iTerm; nudge a session. Every action logged.
+6. Answer Claude permission requests from the dashboard (with a login); daily digest.
