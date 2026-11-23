@@ -10,14 +10,14 @@ state, recent progress and blockers for each project.
 | `orka.toml` | Host settings. Change only this file to move Orka to another Mac. |
 | `watchlist.toml` | The projects that Orka monitors. Orka finds each folder by its number. |
 | `orka.py` | Collector and watchlist tool. Uses no AI and no tokens. |
-| `orka_hook.py` | Hook that Claude Code runs on session events. Adds one line per event to `~/.orka/events.jsonl`. |
-| `~/.orka/` | Runtime data on each Mac: `scorecard.json`, `orka.db`, `events.jsonl`. |
+| `orka_hook.py` | Hook that Claude Code runs on session events. Adds one line per event to `~/dev/.orka/events.jsonl`. |
+| `~/dev/.orka/` | Runtime data on each Mac: `scorecard.json`, `orka.db`, `events.jsonl`. Inside `~/dev` so Claude can read it. |
 
 ## Commands
 
 ```sh
 uv run orka.py show              # collect now and print the scorecard
-uv run orka.py collect           # collect now, write ~/.orka/scorecard.json
+uv run orka.py collect           # collect now, write ~/dev/.orka/scorecard.json
 uv run orka.py watch list
 uv run orka.py watch add 0099 alias1 alias2
 uv run orka.py watch remove 0099

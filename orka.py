@@ -62,7 +62,7 @@ def load_config() -> dict:
         "machine": cfg.get("machine", "mba"),
         "projects_root": p("ORKA_PROJECTS_ROOT", "projects_root", "~/dev/projects"),
         "claude_dir": p("ORKA_CLAUDE_DIR", "claude_projects_dir", "~/.claude/projects"),
-        "state_dir": p("ORKA_STATE_DIR", "state_dir", "~/.orka"),
+        "state_dir": p("ORKA_STATE_DIR", "state_dir", "~/dev/.orka"),
         "active_s": int(th.get("active_minutes", 15)) * 60,
         "stale_s": int(th.get("stale_days", 14)) * 86400,
     }

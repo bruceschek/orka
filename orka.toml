@@ -3,7 +3,7 @@
 machine = "mba"                          # name of this Mac: "mba" or "mbp"
 projects_root = "~/dev/projects"
 claude_projects_dir = "~/.claude/projects" # Claude Code session logs
-state_dir = "~/.orka"                    # orka.db, scorecard.json, events, logs
+state_dir = "~/dev/.orka"                # orka.db, scorecard.json, events.jsonl (inside ~/dev so Claude can read it)
 
 [thresholds]
 active_minutes = 15   # activity newer than this = Active

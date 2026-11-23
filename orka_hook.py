@@ -29,7 +29,7 @@ def state_dir() -> Path:
             return Path(os.path.expanduser(m.group(1)))
     except OSError:
         pass
-    return Path.home() / ".orka"
+    return Path.home() / "dev" / ".orka"
 
 
 def main() -> None:

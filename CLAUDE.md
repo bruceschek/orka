@@ -14,13 +14,13 @@ Everything is one script run with `uv` (PEP 723 inline deps, no project venv or 
 
 ```sh
 uv run orka.py show              # collect and print the scorecard
-uv run orka.py collect           # collect, write ~/.orka/scorecard.json + orka.db
+uv run orka.py collect           # collect, write ~/dev/.orka/scorecard.json + orka.db
 uv run orka.py watch list|add <id> [aliases] [--machine mbp] [--paused]|remove <id>|pause <id>|resume <id>
 uv run orka.py events [n]        # last n hook events
 uv run orka.py install-hooks [--apply]   # Bruce runs this, not Claude (see below)
 ```
 
-Claude may not edit `~/.claude/settings.json` (the auto-mode classifier blocks self-modifying permissions/hooks) and Bruce's auto mode blocks file access outside `~/dev`, which includes `~/.orka/`. So test with `ORKA_STATE_DIR` pointing at a scratch folder, and for `install-hooks` set `HOME` to a fake home.
+Claude may not edit `~/.claude/settings.json` (the auto-mode classifier blocks self-modifying permissions/hooks) and Bruce's auto mode blocks file access outside `~/dev`. That is why `state_dir` is `~/dev/.orka`, not `~/.orka`. Test with `ORKA_STATE_DIR` pointing at a scratch folder so real data stays clean, and for `install-hooks` set `HOME` to a fake home.
 
 For testing against fake data, override paths with env vars: `ORKA_PROJECTS_ROOT`, `ORKA_CLAUDE_DIR`, `ORKA_STATE_DIR` (`samples/` is gitignored for this).
 
@@ -36,4 +36,4 @@ All logic lives in `orka.py`, in this order: config → helpers → sensors → 
 - **Hooks (phase 2):** `orka_hook.py` runs with the system `/usr/bin/python3` (3.9, stdlib only, so no 3.10+ syntax), appends one JSON line per event to `<state_dir>/events.jsonl`, never prints and always exits 0. It must never store prompts or tool inputs. The collector replays the log (`hook_sessions`) into a per-session state (`working`, `needs_you`, `ready`, `ended`). `project_sessions` keeps sessions whose `cwd` is inside the project, only while a live `claude` process is in that folder (SessionEnd can be missed).
 - **State machine:** `decide_state` goes in priority order: Paused → hook sessions if any (needs_you → Waiting on you, working → Active, else Idle "your turn") → phase 1 guess (live session + pending tool call + quiet >2 min) → Active (<`active_minutes`) → Idle → Stale (>`stale_days`).
 - **Existing hooks:** Bruce's global settings already run `~/.config/iterm2/cc-status` on every event (iTerm status). `install-hooks` adds Orka's hook as a separate group and leaves those alone.
-- **Output:** `scorecard.json` and `orka.db` go to `~/.orka/` (`state_dir`), not into the repo. `.gitignore` excludes `*.db` and `scorecard.json`.
+- **Output:** `scorecard.json` and `orka.db` go to `~/dev/.orka/` (`state_dir`), not into the repo. `.gitignore` excludes `*.db` and `scorecard.json`.
