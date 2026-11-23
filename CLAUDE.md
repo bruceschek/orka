@@ -8,6 +8,8 @@ Orka is a read-only monitor for the other Claude Code projects on Bruce's Mac. I
 
 The collector uses no AI and no tokens: it only reads files, git and processes. Keep it that way.
 
+**Resuming work? Read `STATUS.md` first:** current stopping point, machine setup to redo, and next steps.
+
 ## Commands
 
 Everything is one script run with `uv` (PEP 723 inline deps, no project venv or test suite):
