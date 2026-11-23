@@ -277,8 +277,15 @@ def session_info(path: Path, claude_dir: Path, now: float) -> dict:
 
 
 def live_claude_cwds() -> list[str]:
-    """Working folders of running `claude` processes (macOS/Linux, via lsof)."""
-    out = run(["lsof", "-a", "-c", "claude", "-d", "cwd", "-Fn"], Path("/"))
+    """Working folders of running `claude` processes (macOS/Linux, via ps + lsof)."""
+    # `lsof -c claude` does not work: the kernel names the process after the
+    # versioned binary (for example "2.1.330"). `ps` shows the name it was started as.
+    ps = run(["ps", "-axo", "pid=,comm="], Path("/")) or ""
+    pids = [p for p, _, c in (l.strip().partition(" ") for l in ps.splitlines())
+            if os.path.basename(c.strip()) == "claude"]
+    if not pids:
+        return []
+    out = run(["lsof", "-a", "-p", ",".join(pids), "-d", "cwd", "-Fn"], Path("/"))
     if not out:
         return []
     return [l[1:] for l in out.splitlines() if l.startswith("n")]
