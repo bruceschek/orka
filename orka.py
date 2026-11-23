@@ -12,6 +12,8 @@ Usage (from the Orka folder):
   uv run orka.py watch add 0099 [alias ...] [--machine mbp] [--paused]
   uv run orka.py watch remove 0099
   uv run orka.py watch pause 0099 | resume 0099
+  uv run orka.py events [n]         # last n hook events (default 30)
+  uv run orka.py install-hooks [--apply]  # add Orka's hook to ~/.claude/settings.json
 
 The collector uses no AI and no tokens. It only reads files, git and processes.
 Environment overrides (for testing): ORKA_PROJECTS_ROOT, ORKA_CLAUDE_DIR, ORKA_STATE_DIR.
@@ -33,7 +35,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "orka.toml"
 WATCHLIST = HERE / "watchlist.toml"
@@ -291,14 +293,104 @@ def live_claude_cwds() -> list[str]:
     return [l[1:] for l in out.splitlines() if l.startswith("n")]
 
 
+# ---------------------------------------------------------------- hook events (phase 2)
+APPROVAL = re.compile(r"permission|approv", re.I)
+SESSION_TTL = 48 * 3600  # forget a session after this long with no events (missed SessionEnd)
+WORKING_TTL = 3600       # "working" with no event for this long is no longer trusted
+
+
+def read_events(state_dir: Path, max_bytes: int = 2_000_000) -> list[dict]:
+    f = state_dir / "events.jsonl"
+    if not f.is_file():
+        return []
+    with f.open("rb") as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(max(0, size - max_bytes))
+        lines = fh.read().decode("utf-8", errors="replace").splitlines()
+    if size > max_bytes:
+        lines = lines[1:]  # first line may be cut in half
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def hook_sessions(events: list[dict]) -> dict[str, dict]:
+    """Latest state of each session, replayed from the event log.
+
+    States: working (Claude is busy), needs_you (approval or question pending),
+    ready (Claude finished; your turn), ended.
+    """
+    out: dict[str, dict] = {}
+    for ev in events:
+        sid, typ = ev.get("session_id"), ev.get("event")
+        if not sid:
+            continue
+        s = out.setdefault(sid, {"id": sid, "state": "ready", "detail": "", "started": ev.get("ts")})
+        s["cwd"] = ev.get("cwd") or s.get("cwd")
+        s["last_ts"] = ev.get("ts")
+        if typ == "SessionStart":
+            s.update(state="ready", detail="session started")
+        elif typ in ("UserPromptSubmit", "PostToolUse"):
+            s.update(state="working", detail="Claude working")
+        elif typ == "PermissionRequest":
+            tool = ev.get("tool_name")
+            s.update(state="needs_you", detail=f"approval needed: {tool}" if tool else "approval needed")
+        elif typ == "StopFailure":
+            s.update(state="ready", detail="Claude stopped with an error")
+        elif typ == "Notification":
+            ntype, msg = ev.get("notification_type") or "", ev.get("message") or ""
+            if ntype in ("permission_prompt", "elicitation_dialog") or APPROVAL.search(msg):
+                s.update(state="needs_you", detail=msg or "needs your approval")
+            elif s["state"] != "needs_you":
+                s.update(state="ready", detail=msg or "waiting for your input")
+        elif typ == "Stop":
+            s.update(state="ready", detail="Claude finished its reply")
+        elif typ == "SessionEnd":
+            s.update(state="ended", detail=ev.get("reason") or "session ended")
+    return out
+
+
+def project_sessions(path: Path, sessions: dict[str, dict], live: bool, now: float) -> list[dict]:
+    """Open sessions whose folder is this project (or inside it)."""
+    p = str(path)
+    found = []
+    for s in sessions.values():
+        cwd = s.get("cwd") or ""
+        if not (cwd == p or cwd.startswith(p + os.sep)):
+            continue
+        # No live claude process in the folder means its sessions are gone,
+        # even if SessionEnd never arrived (closed terminal, crash).
+        if s["state"] == "ended" or not live or now - (s.get("last_ts") or 0) > SESSION_TTL:
+            continue
+        if s["state"] == "working" and now - s["last_ts"] > WORKING_TTL:
+            s = dict(s, state="ready", detail="no events for an hour")
+        found.append(dict(s, last=iso(s["last_ts"]), last_ago=ago(s["last_ts"], now)))
+    order = {"needs_you": 0, "working": 1, "ready": 2}
+    return sorted(found, key=lambda s: (order.get(s["state"], 9), -(s["last_ts"] or 0)))
+
+
 # ---------------------------------------------------------------- state
-def decide_state(entry, live, git, sess, files_ts, cfg, now) -> tuple[str, float | None, str]:
-    acts = [t for t in (git and git["last_commit_ts"], sess["last_activity_ts"], files_ts) if t]
+def decide_state(entry, live, git, sess, files_ts, cfg, now, hsess=None) -> tuple[str, float | None, str]:
+    hsess = hsess or []
+    acts = [t for t in (git and git["last_commit_ts"], sess["last_activity_ts"], files_ts,
+                        *(s["last_ts"] for s in hsess)) if t]
     last = max(acts) if acts else None
     age = now - last if last else None
     if entry.get("status") == "paused":
         return "Paused", last, "on hold by you"
-    if live and sess["pending_tool_call"] and age and age > 120:
+    if hsess:  # exact, from hooks
+        if any(s["state"] == "needs_you" for s in hsess):
+            s = next(s for s in hsess if s["state"] == "needs_you")
+            return "Waiting on you", last, s["detail"]
+        if any(s["state"] == "working" for s in hsess):
+            return "Active", last, "Claude working"
+        return "Idle", last, "Claude finished; your turn"
+    if live and sess["pending_tool_call"] and age and age > 120:  # guess, for sessions started before hooks
         return "Waiting on you", last, "session open; last step is a tool call with no result (likely an approval)"
     if age is not None and age < cfg["active_s"]:
         return "Active", last, "recent activity"
@@ -313,6 +405,8 @@ def decide_state(entry, live, git, sess, files_ts, cfg, now) -> tuple[str, float
 def collect(cfg: dict) -> dict:
     now = time.time()
     cwds = live_claude_cwds()
+    events = read_events(cfg["state_dir"])
+    sessions = hook_sessions(events)
     projects = []
     for entry in load_watchlist():
         machines = entry.get("machine", cfg["machine"])
@@ -332,10 +426,11 @@ def collect(cfg: dict) -> dict:
         git = git_info(path, now)
         files_ts = newest_mtime(path)
         sess = session_info(path, cfg["claude_dir"], now)
-        state, last, why = decide_state(entry, live, git, sess, files_ts, cfg, now)
+        hsess = project_sessions(path, sessions, live, now)
+        state, last, why = decide_state(entry, live, git, sess, files_ts, cfg, now, hsess)
         rec.update(name=path.name, path=str(path), state=state, note=why,
                    live_session=live, last_activity=iso(last), last_activity_ago=ago(last, now),
-                   git=git, plans=plan_info(path), session=sess,
+                   git=git, plans=plan_info(path), session=sess, sessions=hsess,
                    newest_file=iso(files_ts))
         projects.append(rec)
     return {
@@ -343,6 +438,8 @@ def collect(cfg: dict) -> dict:
         "self_check": {
             "session_logs_readable": cfg["claude_dir"].is_dir(),
             "live_session_detection": bool(cwds) or "no claude process found (or lsof missing)",
+            "hook_events": (f"last event {ago(events[-1].get('ts'), now)}" if events
+                            else "none yet (hooks not installed?)"),
         },
         "projects": projects,
     }
@@ -388,6 +485,11 @@ def show(card: dict) -> None:
         if pl.get("files"):
             line += f" | plan: {pl['open_items']} open"
         print(line + f"  ({p.get('name', p.get('note', ''))})")
+        if p["state"] == "Waiting on you":
+            print(f"       waiting: {short(p.get('note', ''), 110)}")
+        if len(p.get("sessions") or []) > 1:  # one line per agent when several share a project
+            for s in p["sessions"]:
+                print(f"       session {s['id'][:8]}: {s['state']:<9} {s['last_ago']:<10} {short(s['detail'], 80)}")
         if g.get("last_commit_subject"):
             print(f"       last commit: {g['last_commit_subject']}")
         if pl.get("needs_you"):
@@ -442,11 +544,59 @@ def watch(args: list[str]) -> None:
     print(f"watch {cmd} {pid}: done")
 
 
+# ---------------------------------------------------------------- hook setup
+HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "PermissionRequest",
+               "Notification", "Stop", "StopFailure", "SessionEnd")
+
+
+def install_hooks(apply: bool) -> None:
+    """Add Orka's hook to ~/.claude/settings.json next to any hooks already there.
+
+    Run it yourself: Claude is not allowed to change its own settings. Without
+    --apply it only shows what it would add. It never changes or removes other hooks.
+    """
+    settings = Path.home() / ".claude" / "settings.json"
+    text = settings.read_text() if settings.exists() else "{}"
+    data = json.loads(text)
+    cmd = f'/usr/bin/python3 "{HERE / "orka_hook.py"}"'
+    hooks = data.setdefault("hooks", {})
+    added = []
+    for ev in HOOK_EVENTS:
+        groups = hooks.setdefault(ev, [])
+        if any(h.get("command") == cmd for g in groups for h in g.get("hooks", [])):
+            continue
+        groups.append({"hooks": [{"type": "command", "command": cmd, "timeout": 5}]})
+        added.append(ev)
+    if not added:
+        print(f"Orka hooks already installed in {settings}")
+        return
+    print(f"{'Adding' if apply else 'Would add'} to {settings}:\n  command: {cmd}\n  events:  {', '.join(added)}")
+    if not apply:
+        print("Nothing changed. Run again with --apply to install.")
+        return
+    backup = settings.with_name("settings.json.orka-backup")
+    backup.write_text(text)
+    settings.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    print(f"Done. Backup of the old file: {backup}\nNew sessions report to Orka; restart open ones to include them.")
+
+
+def show_events(cfg: dict, n: int) -> None:
+    for ev in read_events(cfg["state_dir"])[-n:]:
+        when = datetime.fromtimestamp(ev.get("ts", 0)).strftime("%m-%d %H:%M:%S")
+        folder = os.path.basename(ev.get("cwd") or "")
+        extra = ev.get("message") or ev.get("tool_name") or ev.get("source") or ev.get("reason") or ""
+        print(f"{when}  {ev.get('event', '?'):<17} {(ev.get('session_id') or '')[:8]}  {folder:<28.28}  {extra}")
+
+
 def main() -> None:
     args = sys.argv[1:] or ["collect"]
     if args[0] == "watch":
         return watch(args[1:])
+    if args[0] == "install-hooks":
+        return install_hooks("--apply" in args)
     cfg = load_config()
+    if args[0] == "events":
+        return show_events(cfg, int(args[1]) if len(args) > 1 else 30)
     card = collect(cfg)
     out = save(card, cfg)
     if args[0] == "show":
