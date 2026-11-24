@@ -8,6 +8,8 @@ Orka is a read-only monitor for the other Claude Code projects on Bruce's Mac. I
 
 The collector uses no AI and no tokens: it only reads files, git and processes. Keep it that way.
 
+**Orca compatibility:** Bruce is building Orka on its own for now. Later he may run the open-source Orca (https://orca.dev) alongside it, so the two coexist and help each other; Orca might take over some parts of Orka while the rest stays. When there is a choice of design, pick the one that would let Orca replace or plug into a part of Orka with little work: clear boundaries between parts (collection, event log, state rules, dashboard API, controls) and open data formats (JSON, HTTP). Mention it when a decision affects this. Don't build speculative Orca integration.
+
 **Resuming work? Read `STATUS.md` first:** current stopping point, machine setup to redo, and next steps.
 
 ## Commands

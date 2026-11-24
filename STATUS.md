@@ -5,35 +5,19 @@ Last updated 2026-11-23. Read this first when resuming after the MBA rebuild.
 ## Where things stand
 
 - Phases 1–3 are built, committed and pushed (`github.com/bruceschek/orka`, branch `main`).
-- Phase 2 hooks proved themselves on real sessions: `PermissionRequest` events arrive
-  (including for AskUserQuestion), as do Stop, UserPromptSubmit, PostToolUse, Notification.
-- Phase 3 dashboard ran as a launchd agent and served correctly on `http://127.0.0.1:8765`.
-- **Stopped at:** phone access. `tailscale serve --bg 8765` hung with no output, both inside
-  Claude Code and in iTerm. Debugging Tailscale is why the Mac is being rebuilt.
+- The MBA was rebuilt and Orka restored on it (2026-11-23): `orka.toml` checked, hooks firing
+  (`uv run orka.py events`), dashboard launchd agent answering on `http://127.0.0.1:8765`.
+- Phone access works from the Mac side: `tailscale serve --bg 8765` serves
+  `https://bruce-mbair-26-04.taila48a19.ts.net/` (Claude verified `/api/health` over HTTPS).
+  `--bg` keeps the config across restarts; turn it off with `tailscale serve --https=443 off`.
+- The old `tailscale serve` hang was most likely because the Mac was logged out of Tailscale
+  and/or HTTPS certificates were off. After the rebuild the Tailscale app was installed but
+  not running; `open -a Tailscale`, log in, then enable MagicDNS + HTTPS in the admin DNS page.
 
-## After the rebuild: restore the machine setup
+## Still to do for phase 3
 
-None of this lives in the repo; it must be redone on the new system.
-
-- [ ] Clone the repo to `~/dev/projects/0102-orka` (Orka finds projects by number under `~/dev/projects`).
-- [ ] Check `orka.toml`: `machine = "mba"`, `state_dir = "~/dev/.orka"`.
-- [ ] Hooks: `uv run orka.py install-hooks`, then `--apply`. It adds Orka's hook to the global
-      `~/.claude/settings.json` next to existing hooks (Bruce's iTerm `cc-status` hook, if restored).
-- [ ] Dashboard: `uv run orka.py install-agent`, then `--apply` (launchd agent `com.<user>.orka`).
-      Claude checks it with `curl http://127.0.0.1:8765/api/health`.
-- [ ] Optional: recreate `.claude/settings.json` in this repo (not committed; local permission
-      rules): allow `Bash(git status:*)`, `Bash(git log:*)`, `Bash(git diff:*)`, `Bash(git show:*)`.
-- [ ] Optional: `uv run orka.py events` after a few minutes of Claude use, to confirm hooks fire.
-
-`~/dev/.orka/` (events, scorecard, history db) is disposable; Orka rebuilds it.
-
-## Then continue phase 3: phone access over Tailscale
-
-- [ ] In iTerm (not inside Claude Code: it hides prompts): `tailscale status` must list devices.
-      If not, open the Tailscale menu bar app and connect.
-- [ ] Tailscale admin (login.tailscale.com → DNS): MagicDNS on, HTTPS Certificates enabled.
-- [ ] `tailscale serve --bg 8765` → note the `https://<mac>.<tailnet>.ts.net` address.
-- [ ] Open that address on the phone, Share → Add to Home Screen.
+- [ ] On the iPhone (Tailscale connected), open `https://bruce-mbair-26-04.taila48a19.ts.net/`,
+      confirm the dashboard shows, then Share → Add to Home Screen. Not yet confirmed by Bruce.
 
 ## Next: phase 4
 
