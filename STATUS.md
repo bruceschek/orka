@@ -14,10 +14,11 @@ Last updated 2026-11-23. Read this first when resuming after the MBA rebuild.
   and/or HTTPS certificates were off. After the rebuild the Tailscale app was installed but
   not running; `open -a Tailscale`, log in, then enable MagicDNS + HTTPS in the admin DNS page.
 
-## Still to do for phase 3
+## Phase 3 phone access: done
 
-- [ ] On the iPhone (Tailscale connected), open `https://bruce-mbair-26-04.taila48a19.ts.net/`,
-      confirm the dashboard shows, then Share → Add to Home Screen. Not yet confirmed by Bruce.
+- [x] iPhone (Tailscale connected) shows the live dashboard at
+      `https://bruce-mbair-26-04.taila48a19.ts.net/` (confirmed by Bruce 2026-11-24).
+      In Safari's top-bar layout, Share is under the ≡ button left of the address.
 
 ## Next: phase 4
 
