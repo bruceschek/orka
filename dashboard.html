@@ -189,7 +189,7 @@ function render() {
     ...(card.peers || []).map(m => m.machine + (m.online ? "" : " offline"))].join(" · ");
   document.getElementById("footer").textContent =
     `collected ${new Date(card.generated_at).toLocaleString()} · collector ${card.collector_version}` +
-    (card.viewer ? ` · you are ${card.viewer}` : "");
+    (card.alerts ? ` · phone alerts ${card.alerts}` : "") + (card.viewer ? ` · you are ${card.viewer}` : "");
   tick();
 }
 

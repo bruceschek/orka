@@ -40,8 +40,12 @@ Bruce's answers (2026-11-24):
       with `machine = "mbp"`, hooks, launchd agent, `tailscale serve --bg 8765`; then put the
       MBP's address under `[machines]` in `orka.toml`, commit, and pull on both Macs. (2026-11-24:
       MBP serving at `https://bruces-m1-mbp-2111.taila48a19.ts.net`; dashboard shows MBA peer online.)
-- [ ] After that, restart `serve` on the MBA (launchd agent) so it picks up the new code.
-- [ ] Phone alerts for "waiting on you" and failed jobs.
+- [x] After that, restart `serve` on the MBA (launchd agent) so it picks up the new code.
+      (2026-11-24: MBA runs 0.4.0 and lists the MBP as online.)
+- [x] Phone alerts for "waiting on you" and failed jobs (2026-11-25, Pushover; test message
+      reached the iPhone; MBA reports "on (this Mac sends)").
+- [ ] MBP: `git pull`, restart its agent, create `~/dev/.orka/pushover.toml` (same two codes),
+      so it can send alerts while the MBA is off.
 
 ## Working notes for Claude
 

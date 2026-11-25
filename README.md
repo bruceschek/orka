@@ -32,6 +32,7 @@ uv run orka.py serve             # dashboard on http://127.0.0.1:8765
 uv run orka.py install-agent     # preview keeping `serve` running at login; add --apply to install
 uv run orka.py new tana graph sync [--machine mbp] [--github]   # preview a new project; add --apply
 uv run orka.py clone 0104        # preview copying a project from GitHub to this Mac; add --apply
+uv run orka.py alert-test        # preview a Pushover test message; add --apply to send it
 ```
 
 ## Dashboard and phone access (phase 3)
@@ -63,6 +64,19 @@ Either Mac may be off. Its data then stays on the dashboard, dimmed and marked
 (retried every 10 seconds), it is shown as live again by itself.
 
 `/api/scorecard` is the combined view; `/api/local` is this Mac only.
+
+## Phone alerts (phase 4)
+
+While `serve` runs, Orka sends a Pushover message to your phone when a project has been
+"Waiting on you", or a job has failed, for 2 minutes (`[alerts]` in `orka.toml`). Each event
+alerts once; when it clears, a later one alerts again. Only one Mac sends: the MBA, or the
+MBP while the MBA is off. An offline Mac's old data never alerts. Tapping the alert opens
+that Mac's dashboard. The footer of the dashboard shows the alert status.
+
+Setup on each Mac: put your Pushover User Key and API Token in `~/dev/.orka/pushover.toml`
+(private, not in git), as `user_key = "…"` and `api_token = "…"`, then
+`uv run orka.py alert-test --apply`. The phone needs the Pushover app, logged in to the same
+account. If nothing arrives, check that the account lists the phone under "Your Devices".
 
 ## New projects and moving them between Macs
 

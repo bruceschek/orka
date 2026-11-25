@@ -15,6 +15,7 @@ Usage (from the Orka folder):
   uv run orka.py events [n]         # last n hook events (default 30)
   uv run orka.py new <name> [--machine mbp] [--github] [--apply]  # next number, folder, watchlist
   uv run orka.py clone <id> [--apply]     # copy a project from GitHub to the same folder here
+  uv run orka.py alert-test [--apply]     # send one test message through Pushover
   uv run orka.py serve              # dashboard on http://127.0.0.1:8765 (phone: tailscale serve)
   uv run orka.py install-agent [--apply]  # keep `serve` running at login (launchd)
   uv run orka.py install-hooks [--apply]  # add Orka's hook to ~/.claude/settings.json
@@ -33,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,7 +45,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "orka.toml"
 CONFIG_LOCAL = HERE / "orka.local.toml"  # per-Mac overrides, not in git (e.g. machine = "mbp")
@@ -83,6 +85,9 @@ def load_config() -> dict:
         "refresh_s": int(sv.get("refresh_seconds", 30)),
         "machine": machine,
         "peers": {n: u for n, u in machines.items() if n != machine and u},  # other Macs' dashboards
+        "machine_urls": machines,
+        "alerts_on": bool(cfg.get("alerts", {}).get("enabled", True)),
+        "alert_after_s": int(cfg.get("alerts", {}).get("after_seconds", 120)),
         "projects_root": p("ORKA_PROJECTS_ROOT", "projects_root", "~/dev/projects"),
         "claude_dir": p("ORKA_CLAUDE_DIR", "claude_projects_dir", "~/.claude/projects"),
         "state_dir": p("ORKA_STATE_DIR", "state_dir", "~/dev/.orka"),
@@ -914,6 +919,63 @@ def peer_loop(name: str, url: str, cfg: dict, peers: dict, lock: threading.Lock)
         time.sleep(cfg["refresh_s"])
 
 
+# ---------------------------------------------------------------- phone alerts (phase 4)
+# Pushover push messages for "Waiting on you" and failed jobs. Codes live in
+# <state_dir>/pushover.toml (private, not in git). Only one Mac sends: the first machine
+# name, in sorted order, among this Mac and the other Macs that are online (so the MBA,
+# unless it is off). A condition must last alert_after_s before it alerts, and alerts once.
+PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
+
+
+def pushover_codes(cfg: dict) -> dict | None:
+    try:
+        c = tomllib.loads((cfg["state_dir"] / "pushover.toml").read_text())
+    except (OSError, ValueError):
+        return None
+    ok = all(re.fullmatch(r"[A-Za-z0-9]{30}", str(c.get(k, ""))) for k in ("user_key", "api_token"))
+    return c if ok else None
+
+
+def send_pushover(codes: dict, title: str, message: str, url: str | None = None) -> None:
+    fields = {"token": codes["api_token"], "user": codes["user_key"],
+              "title": title[:250], "message": message[:1000] or title[:250]}
+    if url:
+        fields.update(url=url, url_title="Open Orka")
+    data = urllib.parse.urlencode(fields).encode()
+    with urllib.request.urlopen(urllib.request.Request(PUSHOVER_URL, data=data), timeout=10) as r:
+        if json.load(r).get("status") != 1:
+            raise RuntimeError("Pushover did not accept the message")
+
+
+def is_alert_sender(cfg: dict, merged: dict) -> bool:
+    online = [cfg["machine"]] + [m["machine"] for m in merged.get("peers", []) if m["online"]]
+    return sorted(online)[0] == cfg["machine"]
+
+
+def alert_conditions(merged: dict) -> dict[str, tuple[str, str]]:
+    """key -> (title, message) for everything that should alert right now."""
+    out = {}
+    for p in merged.get("projects", []):
+        if p.get("state") == "Waiting on you" and not p.get("peer_offline"):
+            name = re.sub(r"^\d{4}-", "", p.get("name") or "")
+            mach = p.get("from_machine") or merged.get("machine")
+            out[f"wait:{p['id']}"] = (f"{p['id']} {name} is waiting on you ({mach})",
+                                      short(p.get("note") or "", 200))
+    for j in merged.get("jobs", []):
+        if j.get("status") in ("failed", "not loaded") and not j.get("peer_offline"):
+            mach = j.get("from_machine") or merged.get("machine")
+            code = f", exit code {j.get('last_exit_code')}" if j.get("status") == "failed" else ""
+            out[f"job:{j.get('id')}"] = (f"Job {j.get('id')} {j.get('status')} ({mach})", f"{j.get('status')}{code}")
+    return out
+
+
+def alerts_due(conds: dict, seen: dict, now: float, after_s: int) -> tuple[list[str], dict]:
+    """seen: key -> {"since": ts, "sent": bool}. Returns keys to send now, and the new seen."""
+    new = {k: seen.get(k, {"since": now, "sent": False}) for k in conds}  # cleared keys drop out
+    due = [k for k, v in new.items() if not v["sent"] and now - v["since"] >= after_s]
+    return due, new
+
+
 SNAPSHOT_EVERY = 600  # seconds between orka.db history rows while serving
 
 
@@ -945,10 +1007,40 @@ def serve(cfg: dict) -> None:
                 last_snap = time.time() if snap else last_snap
                 with lock:
                     state.update(card=card, error=None)
+                    snap_peers = {n: dict(p) for n, p in peers.items()}
+                check_alerts(merge_peers(card, snap_peers, cfg, time.time()))
             except Exception as e:  # keep serving the last good card
                 with lock:
                     state["error"] = f"{type(e).__name__}: {e}"
             time.sleep(cfg["refresh_s"])
+
+    alert_file = cfg["state_dir"] / "alerts.json"
+    try:
+        alert_seen = json.loads(alert_file.read_text())
+    except (OSError, ValueError):
+        alert_seen = {}
+
+    def check_alerts(merged: dict) -> None:
+        nonlocal alert_seen
+        codes = pushover_codes(cfg) if cfg["alerts_on"] else None
+        if not codes:
+            state["alerts"] = "off" if not cfg["alerts_on"] else "no Pushover codes"
+            return
+        sender = is_alert_sender(cfg, merged)
+        conds = alert_conditions(merged)
+        due, alert_seen = alerts_due(conds, alert_seen, time.time(), cfg["alert_after_s"])
+        state["alerts"] = "on (this Mac sends)" if sender else "on (another Mac sends)"
+        for k in due:
+            if sender:
+                try:
+                    send_pushover(codes, *conds[k], url=cfg["machine_urls"].get(cfg["machine"]) or None)
+                except Exception as e:
+                    state["alerts"] = f"send failed: {type(e).__name__}: {e}"
+                    continue  # retry next cycle
+            alert_seen[k]["sent"] = True  # the other Mac's sender handles it if not us
+        tmp = alert_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(alert_seen))
+        os.replace(tmp, alert_file)
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: bytes, ctype: str) -> None:
@@ -974,7 +1066,8 @@ def serve(cfg: dict) -> None:
                     return
                 if path == "/api/scorecard":
                     card = merge_peers(card, snap, cfg, time.time())
-                body = dict(card, serve_error=err, viewer=self.headers.get("Tailscale-User-Login"))
+                body = dict(card, serve_error=err, viewer=self.headers.get("Tailscale-User-Login"),
+                            alerts=state.get("alerts"))
                 self._send(200, json.dumps(body, default=str).encode(), "application/json")
             elif path == "/api/health":
                 self._send(200, b'{"ok": true}', "application/json")
@@ -1058,6 +1151,15 @@ def main() -> None:
         return serve(cfg)
     if args[0] == "install-agent":
         return install_agent(cfg, "--apply" in args)
+    if args[0] == "alert-test":
+        codes = pushover_codes(cfg)
+        if not codes:
+            sys.exit(f"no valid codes in {cfg['state_dir'] / 'pushover.toml'}")
+        if "--apply" not in args:
+            return print("Would send one test message to your phone. Add --apply to send it.")
+        send_pushover(codes, f"Orka test from {cfg['machine']}", "Phone alerts work.",
+                      url=cfg["machine_urls"].get(cfg["machine"]) or None)
+        return print("sent")
     if args[0] == "new":
         return new_project(cfg, args[1:])
     if args[0] == "clone":
