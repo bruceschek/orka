@@ -20,4 +20,4 @@ stale_days     = 14   # no activity for longer than this = Stale
 # Leave an address empty until that Mac runs Orka.
 [machines]
 mba = "https://bruce-mbair-26-04.taila48a19.ts.net"
-mbp = ""
+mbp = "https://bruces-m1-mbp-2111.taila48a19.ts.net"
