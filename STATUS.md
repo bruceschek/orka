@@ -33,6 +33,8 @@ Bruce's answers (2026-11-24):
 - [x] `orka.py new` / `clone` (2026-11-24): one project-number sequence for both Macs, registry
       in `watchlist.toml` (`last_number = "0103"` set by hand from the MBA's folders).
 - [ ] Bruce: point his `newproj` shell function (in `~/.zshrc`) at `orka.py new --apply`.
+- [ ] On the MBP first: `whoami; git --version; uv --version; claude --version; ls -d /Applications/Tailscale.app`,
+      then follow `M1-SETUP.md` in the command-line-tools repo (prompt, status line, `newproj`).
 - [ ] Install Orka on the MBP: clone to `~/dev/projects/0102-orka`, create `orka.local.toml`
       with `machine = "mbp"`, hooks, launchd agent, `tailscale serve --bg 8765`; then put the
       MBP's address under `[machines]` in `orka.toml`, commit, and pull on both Macs.
