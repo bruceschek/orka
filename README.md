@@ -7,7 +7,8 @@ state, recent progress and blockers for each project.
 
 | File | Purpose |
 |---|---|
-| `orka.toml` | Host settings. Change only this file to move Orka to another Mac. |
+| `orka.toml` | Settings shared by both Macs, including each Mac's Tailscale address (`[machines]`). |
+| `orka.local.toml` | Optional, not in git: this Mac's overrides. On the MBP: `machine = "mbp"`. |
 | `watchlist.toml` | The projects that Orka monitors. Orka finds each folder by its number. |
 | `jobs.toml` | Non-Claude jobs Orka reports on: launchd agents and long-running scripts, per Mac. |
 | `orka.py` | Collector, dashboard server and watchlist tool. Uses no AI and no tokens. |
@@ -46,6 +47,20 @@ tailscale serve --bg 8765
 
 Then open `https://<this-mac>.<your-tailnet>.ts.net` on the phone and use
 Share → Add to Home Screen. Only devices signed in to your tailnet can reach it.
+
+## Both Macs (phase 4)
+
+Each Mac runs its own Orka. Put each Mac's `tailscale serve` address under `[machines]` in
+`orka.toml`. Every Mac then fetches the others' data from `/api/local` and shows their
+projects and jobs too, tagged with the Mac's name, so either Mac's address on the phone
+shows both Macs.
+
+Either Mac may be off. Its data then stays on the dashboard, dimmed and marked
+"offline · data as of …", and is never listed under "Needs you". The last copy is kept in
+`~/dev/.orka/peer-<name>.json`, so it survives a restart. When that Mac answers again
+(retried every 10 seconds), it is shown as live again by itself.
+
+`/api/scorecard` is the combined view; `/api/local` is this Mac only.
 
 ## Hooks (phase 2)
 

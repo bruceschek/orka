@@ -39,6 +39,11 @@
        margin: 22px 0 8px; }
   .banner { background: var(--fail-bg); color: var(--fail); border-radius: 10px; padding: 10px 12px;
             margin: 8px 0; font-size: 14px; }
+  .banner.info { background: var(--idle-bg); color: var(--idle); }
+  .banner small { display: block; opacity: .8; overflow-wrap: anywhere; }
+  .mach { font: 600 11px var(--mono); color: var(--muted); border: 1px solid var(--line);
+          border-radius: 6px; padding: 0 5px; white-space: nowrap; }
+  .card.offline { opacity: .6; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
           padding: 12px 14px; margin: 8px 0; }
   .card.wait { border-color: var(--wait); }
@@ -98,11 +103,23 @@ const pill = s => el("span", {class: pillClass(s)}, s);
 const niceName = p => (p.name || "").replace(/^\d{4}-/, "").replace(/\s*\[[a-z]\d+\]$/i, "");
 function line(label, text) { return el("div", {class: "line"}, el("b", {}, label + " "), text); }
 
+function agoText(t) {
+  const m = Math.round((Date.now() - new Date(t)) / 60000);
+  return m < 1 ? "just now" : m < 60 ? m + "m ago" : m < 2880 ? Math.round(m / 60) + "h ago" : Math.round(m / 1440) + "d ago";
+}
+const machTag = x => x.from_machine ? el("span", {class: "mach"}, x.from_machine) : null;
+function offlineLine(x) {
+  return x.peer_offline ? line(x.from_machine + " is offline", "· data as of " + agoText(x.as_of)) : null;
+}
+
 function projectCard(p) {
   const g = p.git || {}, pl = p.plans || {}, s = p.session || {};
-  const c = el("div", {class: "card" + (p.state === "Waiting on you" ? " wait" : "")},
+  const waiting = p.state === "Waiting on you" && !p.peer_offline;
+  const c = el("div", {class: "card" + (waiting ? " wait" : "") + (p.peer_offline ? " offline" : "")},
     el("div", {class: "row"}, el("span", {class: "id"}, p.id), el("span", {class: "name"}, niceName(p) || p.note),
-       el("span", {class: "ago"}, p.last_activity_ago || ""), pill(p.state)));
+       machTag(p), el("span", {class: "ago"}, p.last_activity_ago || ""), pill(p.state)));
+  const off = offlineLine(p);
+  if (off) c.append(off);
   if (p.state === "Waiting on you" || (p.sessions || []).length) c.append(el("div", {class: "note"}, p.note));
   for (const x of (p.sessions || []).length > 1 ? p.sessions : [])
     c.append(line("session " + x.id.slice(0, 8), `${x.state} · ${x.last_ago} · ${x.detail}`));
@@ -129,9 +146,11 @@ function projectCard(p) {
 }
 
 function jobCard(j) {
-  const c = el("div", {class: "card"},
-    el("div", {class: "row"}, el("span", {class: "name"}, j.id),
+  const c = el("div", {class: "card" + (j.peer_offline ? " offline" : "")},
+    el("div", {class: "row"}, el("span", {class: "name"}, j.id), machTag(j),
        el("span", {class: "ago"}, j.last_run_ago ? "ran " + j.last_run_ago : (j.machine || "")), pill(j.status)));
+  const off = offlineLine(j);
+  if (off) c.append(off);
   if (j.status === "failed") c.append(el("div", {class: "note"}, `last exit code ${j.last_exit_code}`));
   for (const p of j.processes || []) c.append(line("pid " + p.pid, `up ${p.elapsed} · ${p.command}`));
   const logs = [];
@@ -145,13 +164,14 @@ function render() {
   if (!card) return;
   const projects = [...card.projects].sort((a, b) => (ORDER[a.state] ?? 9) - (ORDER[b.state] ?? 9) || a.id.localeCompare(b.id));
   const jobs = card.jobs || [];
-  const waiting = projects.filter(p => p.state === "Waiting on you");
-  const failed = jobs.filter(j => j.status === "failed" || j.status === "not loaded");
+  // An offline Mac's data is old, so it never goes under "Needs you".
+  const waiting = projects.filter(p => p.state === "Waiting on you" && !p.peer_offline);
+  const failed = jobs.filter(j => (j.status === "failed" || j.status === "not loaded") && !j.peer_offline);
   const needs = document.getElementById("needs");
   needs.replaceChildren(...waiting.map(projectCard), ...failed.map(jobCard));
   if (!needs.children.length) needs.append(el("div", {class: "empty"}, "Nothing is waiting on you."));
   document.getElementById("projects").replaceChildren(
-    ...projects.filter(p => p.state !== "Waiting on you").map(projectCard));
+    ...projects.filter(p => !waiting.includes(p)).map(projectCard));
   const rest = jobs.filter(j => !failed.includes(j));
   document.getElementById("jobs").replaceChildren(...(rest.length ? rest.map(jobCard)
     : [el("div", {class: "empty"}, failed.length ? "All jobs listed above." : "No jobs in jobs.toml.")]));
@@ -160,8 +180,13 @@ function render() {
     if (v !== true && !(k === "hook_events" && String(v).startsWith("last event")))
       banners.push(el("div", {class: "banner"}, `${k.replace(/_/g, " ")}: ${v}`));
   if (card.serve_error) banners.push(el("div", {class: "banner"}, "collector error: " + card.serve_error));
+  for (const m of card.peers || [])
+    if (!m.online) banners.push(el("div", {class: "banner info"},
+      m.last_seen ? `${m.machine} is offline · last seen ${agoText(m.last_seen)}` : `${m.machine} not reached yet`,
+      m.error ? el("small", {}, m.error) : null));
   document.getElementById("banners").replaceChildren(...banners);
-  document.getElementById("machine").textContent = card.machine;
+  document.getElementById("machine").textContent = [card.machine + " (this Mac)",
+    ...(card.peers || []).map(m => m.machine + (m.online ? "" : " offline"))].join(" · ");
   document.getElementById("footer").textContent =
     `collected ${new Date(card.generated_at).toLocaleString()} · collector ${card.collector_version}` +
     (card.viewer ? ` · you are ${card.viewer}` : "");

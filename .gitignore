@@ -3,3 +3,4 @@ __pycache__/
 samples/
 *.db
 scorecard.json
+orka.local.toml

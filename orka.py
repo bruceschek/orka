@@ -18,7 +18,8 @@ Usage (from the Orka folder):
   uv run orka.py install-hooks [--apply]  # add Orka's hook to ~/.claude/settings.json
 
 The collector uses no AI and no tokens. It only reads files, git and processes.
-Environment overrides (for testing): ORKA_PROJECTS_ROOT, ORKA_CLAUDE_DIR, ORKA_STATE_DIR.
+Environment overrides (for testing): ORKA_PROJECTS_ROOT, ORKA_CLAUDE_DIR, ORKA_STATE_DIR,
+ORKA_MACHINE, ORKA_PORT, ORKA_WATCHLIST, ORKA_JOBS, ORKA_PEERS ("mbp=http://127.0.0.1:8799,...").
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,11 +41,12 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "orka.toml"
-WATCHLIST = HERE / "watchlist.toml"
-JOBS = HERE / "jobs.toml"
+CONFIG_LOCAL = HERE / "orka.local.toml"  # per-Mac overrides, not in git (e.g. machine = "mbp")
+WATCHLIST = Path(os.environ.get("ORKA_WATCHLIST") or HERE / "watchlist.toml")
+JOBS = Path(os.environ.get("ORKA_JOBS") or HERE / "jobs.toml")
 DASHBOARD = HERE / "dashboard.html"
 
 PLAN_NAMES = re.compile(
@@ -61,6 +64,14 @@ CHECKED = re.compile(r"^\s*[-*]\s+\[[xX]\]\s+")
 # ---------------------------------------------------------------- config
 def load_config() -> dict:
     cfg = tomllib.loads(CONFIG.read_text()) if CONFIG.exists() else {}
+    if CONFIG_LOCAL.exists():  # one level of table merging is enough for this file
+        for k, v in tomllib.loads(CONFIG_LOCAL.read_text()).items():
+            both = isinstance(v, dict) and isinstance(cfg.get(k), dict)
+            cfg[k] = {**cfg[k], **v} if both else v
+    machine = os.environ.get("ORKA_MACHINE") or cfg.get("machine", "mba")
+    machines = dict(cfg.get("machines", {}))
+    if os.environ.get("ORKA_PEERS") is not None:
+        machines = dict(x.split("=", 1) for x in os.environ["ORKA_PEERS"].split(",") if "=" in x)
     def p(env, key, default):
         return Path(os.path.expanduser(os.environ.get(env) or cfg.get(key) or default))
     th = cfg.get("thresholds", {})
@@ -68,7 +79,8 @@ def load_config() -> dict:
     return {
         "port": int(os.environ.get("ORKA_PORT") or sv.get("port", 8765)),
         "refresh_s": int(sv.get("refresh_seconds", 30)),
-        "machine": cfg.get("machine", "mba"),
+        "machine": machine,
+        "peers": {n: u for n, u in machines.items() if n != machine and u},  # other Macs' dashboards
         "projects_root": p("ORKA_PROJECTS_ROOT", "projects_root", "~/dev/projects"),
         "claude_dir": p("ORKA_CLAUDE_DIR", "claude_projects_dir", "~/.claude/projects"),
         "state_dir": p("ORKA_STATE_DIR", "state_dir", "~/dev/.orka"),
@@ -690,6 +702,75 @@ def install_hooks(apply: bool) -> None:
 
 
 # ---------------------------------------------------------------- serve (phase 3)
+# ---------------------------------------------------------------- other Macs (phase 4)
+# Each Mac runs its own Orka. `serve` fetches the other Macs' /api/local over Tailscale and
+# keeps the last good copy (in memory and in <state_dir>/peer-<name>.json). Either Mac may be
+# off at any time: its data then stays on the dashboard, marked offline, until it answers again.
+PEER_TIMEOUT = 5  # seconds per fetch
+
+
+def fetch_peer(name: str, url: str) -> dict:
+    req = urllib.request.Request(url.rstrip("/") + "/api/local",
+                                 headers={"User-Agent": f"orka/{VERSION}"})
+    with urllib.request.urlopen(req, timeout=PEER_TIMEOUT) as r:
+        card = json.load(r)
+    if not isinstance(card, dict) or not isinstance(card.get("projects"), list):
+        raise ValueError("answer is not an Orka scorecard")
+    if card.get("machine") != name:
+        raise ValueError(f"answered as machine {card.get('machine')!r}, expected {name!r}")
+    return card
+
+
+def peer_offline_after(cfg: dict) -> int:
+    return max(90, 3 * cfg["refresh_s"])
+
+
+def merge_peers(card: dict, peers: dict[str, dict], cfg: dict, now: float) -> dict:
+    """This Mac's card, with each Remote project or job replaced by the other Mac's record."""
+    status, projects, jobs = [], {}, {}
+    for name, ps in sorted(peers.items()):
+        last_ok = ps.get("last_ok")
+        online = bool(last_ok) and now - last_ok < peer_offline_after(cfg)
+        status.append({"machine": name, "online": online, "last_seen": iso(last_ok),
+                       "last_seen_ago": ago(last_ok, now) if last_ok else None,
+                       "error": None if online else ps.get("error")})
+        pc = ps.get("card")
+        if not pc:
+            continue
+        tag = {"from_machine": name, "as_of": pc.get("generated_at"), "peer_offline": not online}
+        for p in pc.get("projects", []):
+            if p.get("state") != "Remote":
+                projects.setdefault(p.get("id"), dict(p, **tag))
+        for j in pc.get("jobs", []):
+            if j.get("status") != "remote":
+                jobs.setdefault(j.get("id"), dict(j, **tag))
+    out = dict(card, peers=status)
+    out["projects"] = [projects.get(p["id"], p) if p.get("state") == "Remote" else p
+                       for p in card["projects"]]
+    out["jobs"] = [jobs.get(j.get("id"), j) if j.get("status") == "remote" else j
+                   for j in card.get("jobs", [])]
+    return out
+
+
+def peer_loop(name: str, url: str, cfg: dict, peers: dict, lock: threading.Lock) -> None:
+    cache = cfg["state_dir"] / f"peer-{name}.json"
+    while True:
+        try:
+            pc = fetch_peer(name, url)
+            t = time.time()
+            with lock:
+                peers[name].update(card=pc, last_ok=t, error=None)
+            tmp = cache.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"url": url, "last_ok": t, "card": pc}, default=str))
+            os.replace(tmp, cache)
+        except Exception as e:  # off, asleep, or not set up yet: keep the last copy
+            with lock:
+                peers[name]["error"] = f"{type(e).__name__}: {e}"
+            time.sleep(min(10, cfg["refresh_s"]))  # retry sooner, so a Mac that wakes shows up fast
+            continue
+        time.sleep(cfg["refresh_s"])
+
+
 SNAPSHOT_EVERY = 600  # seconds between orka.db history rows while serving
 
 
@@ -701,6 +782,15 @@ def serve(cfg: dict) -> None:
     """
     state = {"card": None, "error": None}
     lock = threading.Lock()
+    peers: dict[str, dict] = {}
+    cfg["state_dir"].mkdir(parents=True, exist_ok=True)
+    for name, url in cfg["peers"].items():
+        try:  # last known copy from before a restart
+            saved = json.loads((cfg["state_dir"] / f"peer-{name}.json").read_text())
+            saved = saved if saved.get("url") == url else {}
+        except (OSError, ValueError):
+            saved = {}
+        peers[name] = {"card": saved.get("card"), "last_ok": saved.get("last_ok"), "error": None}
 
     def refresher() -> None:
         last_snap = 0.0
@@ -730,16 +820,19 @@ def serve(cfg: dict) -> None:
             path = self.path.split("?", 1)[0]
             if path == "/":
                 self._send(200, DASHBOARD.read_bytes(), "text/html; charset=utf-8")
-            elif path == "/api/scorecard":
+            elif path in ("/api/scorecard", "/api/local"):
+                # /api/local: this Mac only (what other Macs fetch). /api/scorecard: all Macs.
                 with lock:
                     card, err = state["card"], state["error"]
+                    snap = {n: dict(p) for n, p in peers.items()}
                 if card is None:
                     self._send(503, json.dumps({"error": err or "first collect still running"}).encode(),
                                "application/json")
-                else:
-                    body = dict(card, serve_error=err,
-                                viewer=self.headers.get("Tailscale-User-Login"))
-                    self._send(200, json.dumps(body, default=str).encode(), "application/json")
+                    return
+                if path == "/api/scorecard":
+                    card = merge_peers(card, snap, cfg, time.time())
+                body = dict(card, serve_error=err, viewer=self.headers.get("Tailscale-User-Login"))
+                self._send(200, json.dumps(body, default=str).encode(), "application/json")
             elif path == "/api/health":
                 self._send(200, b'{"ok": true}', "application/json")
             else:
@@ -749,8 +842,11 @@ def serve(cfg: dict) -> None:
             pass
 
     threading.Thread(target=refresher, daemon=True).start()
+    for name, url in cfg["peers"].items():
+        threading.Thread(target=peer_loop, args=(name, url, cfg, peers, lock), daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", cfg["port"]), Handler)
-    print(f"Orka dashboard on http://127.0.0.1:{cfg['port']}  (Ctrl-C to stop)")
+    print(f"Orka dashboard on http://127.0.0.1:{cfg['port']}  machine={cfg['machine']}  "
+          f"peers={', '.join(cfg['peers']) or 'none'}  (Ctrl-C to stop)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

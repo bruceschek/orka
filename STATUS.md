@@ -22,8 +22,19 @@ Last updated 2026-11-23. Read this first when resuming after the MBA rebuild.
 
 ## Next: phase 4
 
-- [ ] Bruce lists the M1's launchd agents and long-running scripts (and whether the M1 is always on;
-      unanswered so far). Then install Orka on the M1 and make each dashboard show both Macs.
+Bruce's answers (2026-11-24):
+- The M1 has no launchd agents yet; they will be added later.
+- Both Macs are usually on, but either or both may sometimes be shut down. Everything must
+  handle that (see the "Machines can be off" rule in `CLAUDE.md`).
+
+- [x] Each Mac's dashboard also shows the other Mac (built 2026-11-24, collector 0.4.0; tested
+      with two local `serve`s: both online, MBP off → offline after ~80s, MBA restart keeps the
+      MBP's last copy, MBP back on → live again in ~9s).
+- [ ] Install Orka on the MBP: clone to `~/dev/projects/0102-orka`, create `orka.local.toml`
+      with `machine = "mbp"`, hooks, launchd agent, `tailscale serve --bg 8765`; then put the
+      MBP's address under `[machines]` in `orka.toml`, commit, and pull on both Macs.
+- [ ] After that, restart `serve` on the MBA (launchd agent) so it picks up the new code.
+- [ ] Phone alerts for "waiting on you" and failed jobs.
 
 ## Working notes for Claude
 

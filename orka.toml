@@ -1,6 +1,8 @@
-# Orka host configuration. To move Orka to another Mac, change this file only.
+# Orka host configuration, shared by both Macs through git.
+# Per-Mac differences go in orka.local.toml (not in git), which overrides this file.
+# On the MBP it holds one line:  machine = "mbp"
 
-machine = "mba"                          # name of this Mac: "mba" or "mbp"
+machine = "mba"                          # name of this Mac: "mba" or "mbp" (MBP: set in orka.local.toml)
 projects_root = "~/dev/projects"
 claude_projects_dir = "~/.claude/projects" # Claude Code session logs
 state_dir = "~/dev/.orka"                # orka.db, scorecard.json, events.jsonl (inside ~/dev so Claude can read it)
@@ -12,3 +14,10 @@ refresh_seconds = 30  # how often the dashboard collects
 [thresholds]
 active_minutes = 15   # activity newer than this = Active
 stale_days     = 14   # no activity for longer than this = Stale
+
+# Each Mac's dashboard address on the tailnet (from `tailscale serve`). Every Mac fetches the
+# others' data from here and shows it, marked offline when that Mac can't be reached.
+# Leave an address empty until that Mac runs Orka.
+[machines]
+mba = "https://bruce-mbair-26-04.taila48a19.ts.net"
+mbp = ""
