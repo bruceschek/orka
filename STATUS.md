@@ -54,6 +54,11 @@ Bruce's answers (2026-11-24):
       local, forwarded to the owning Mac, already-paused, offline owner, and refusals for wrong
       Content-Type / Origin / Host / login / action. MBA has `~/dev/.orka/controls.toml`.
 - [ ] Restart both agents; MBP also needs `~/dev/.orka/controls.toml` (same login).
+- [x] Ready for chess (0085) on the M1 (2026-11-25, 0.7.0): `chess-m1` script job (`machine = "mbp"`,
+      `alert_on_stop`), phone alert when it stops, chess card shows the MBP copy ("on mbp" line).
+      Tested on fake data and with a test `serve` against the real MBP.
+- [ ] Restart both agents for 0.7.0 (MBP: `git pull` first). Narrow `chess-m1`'s `match` once the
+      chess project picks its first M1 command. Chess-side blockers: Remote Login on the M1 (R9).
 - [ ] Next controls: start/stop/restart jobs; open or start a Claude session in iTerm; nudge a
       session (keep Orca in mind: it may take over session control).
 

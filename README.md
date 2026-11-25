@@ -63,6 +63,9 @@ Either Mac may be off. Its data then stays on the dashboard, dimmed and marked
 `~/dev/.orka/peer-<name>.json`, so it survives a restart. When that Mac answers again
 (retried every 10 seconds), it is shown as live again by itself.
 
+A project on both Macs (`machine = ["mba", "mbp"]`, e.g. after `clone`) shows this Mac's copy,
+with an "on mbp" line for the other Mac's copy. It goes under "Needs you" if either copy waits.
+
 `/api/scorecard` is the combined view; `/api/local` is this Mac only.
 
 ## Phone alerts (phase 4)
@@ -72,6 +75,11 @@ While `serve` runs, Orka sends a Pushover message to your phone when a project h
 alerts once; when it clears, a later one alerts again. Only one Mac sends: the MBA, or the
 MBP while the MBA is off. An offline Mac's old data never alerts. Tapping the alert opens
 that Mac's dashboard. The footer of the dashboard shows the alert status.
+
+A script job with `alert_on_stop = true` in `jobs.toml` (such as `chess-m1`, the chess
+project's runs on the M1) also alerts when Orka saw it running and it is gone. Orka can't tell
+a finished run from a crash, so the message says to check the log. If its Mac was off, the
+alert comes when that Mac is back.
 
 Setup on each Mac: put your Pushover User Key and API Token in `~/dev/.orka/pushover.toml`
 (private, not in git), as `user_key = "…"` and `api_token = "…"`, then

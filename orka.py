@@ -46,7 +46,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "orka.toml"
 CONFIG_LOCAL = HERE / "orka.local.toml"  # per-Mac overrides, not in git (e.g. machine = "mbp")
@@ -376,7 +376,7 @@ def script_info(pattern: str) -> dict:
 
 
 def job_info(job: dict, now: float) -> dict:
-    rec = {k: job.get(k) for k in ("id", "kind", "machine", "label", "match")}
+    rec = {k: job.get(k) for k in ("id", "kind", "machine", "label", "match", "alert_on_stop")}
     if job.get("kind") == "launchd":
         rec.update(launchd_info(job["label"], now))
     elif job.get("kind") == "script":
@@ -875,8 +875,10 @@ def peer_offline_after(cfg: dict) -> int:
 
 
 def merge_peers(card: dict, peers: dict[str, dict], cfg: dict, now: float) -> dict:
-    """This Mac's card, with each Remote project or job replaced by the other Mac's record."""
-    status, projects, jobs = [], {}, {}
+    """This Mac's card, with each Remote project or job replaced by the other Mac's record.
+    A project that lives on this Mac and another one keeps this Mac's record and gets the
+    other Mac's copy under `elsewhere` (a short summary, tagged like a peer record)."""
+    status, projects, jobs, copies = [], {}, {}, {}
     for name, ps in sorted(peers.items()):
         last_ok = ps.get("last_ok")
         online = bool(last_ok) and now - last_ok < peer_offline_after(cfg)
@@ -890,11 +892,14 @@ def merge_peers(card: dict, peers: dict[str, dict], cfg: dict, now: float) -> di
         for p in pc.get("projects", []):
             if p.get("state") != "Remote":
                 projects.setdefault(p.get("id"), dict(p, **tag))
+                copies.setdefault(p.get("id"), []).append(dict(
+                    {k: p.get(k) for k in ("state", "note", "last_activity_ago")}, **tag))
         for j in pc.get("jobs", []):
             if j.get("status") != "remote":
                 jobs.setdefault(j.get("id"), dict(j, **tag))
     out = dict(card, peers=status)
-    out["projects"] = [projects.get(p["id"], p) if p.get("state") == "Remote" else p
+    out["projects"] = [projects.get(p["id"], p) if p.get("state") == "Remote"
+                       else dict(p, elsewhere=copies[p["id"]]) if p["id"] in copies else p
                        for p in card["projects"]]
     out["jobs"] = [jobs.get(j.get("id"), j) if j.get("status") == "remote" else j
                    for j in card.get("jobs", [])]
@@ -956,20 +961,40 @@ def is_alert_sender(cfg: dict, merged: dict) -> bool:
     return sorted(online)[0] == cfg["machine"]
 
 
-def alert_conditions(merged: dict) -> dict[str, tuple[str, str]]:
+def stopped_jobs(merged: dict, was_running: set) -> tuple[set, set]:
+    """Script jobs with `alert_on_stop` that Orka saw running and that are gone now.
+    A process that ends can't tell us whether it finished or crashed, so the alert says so.
+    Returns (stopped ids, updated was_running). An offline Mac's jobs keep their mark, so a
+    run that died with a shutdown alerts when that Mac is back."""
+    stopped, keep = set(), set(was_running)
+    for j in merged.get("jobs", []):
+        if not j.get("alert_on_stop") or j.get("peer_offline") or j.get("status") == "remote":
+            continue
+        if j.get("running"):
+            keep.add(j["id"])
+        elif j["id"] in keep:
+            stopped.add(j["id"])
+    return stopped, keep
+
+
+def alert_conditions(merged: dict, stopped: set = frozenset()) -> dict[str, tuple[str, str]]:
     """key -> (title, message) for everything that should alert right now."""
     out = {}
     for p in merged.get("projects", []):
-        if p.get("state") == "Waiting on you" and not p.get("peer_offline"):
-            name = re.sub(r"^\d{4}-", "", p.get("name") or "")
-            mach = p.get("from_machine") or merged.get("machine")
-            out[f"wait:{p['id']}"] = (f"{p['id']} {name} is waiting on you ({mach})",
-                                      short(p.get("note") or "", 200))
+        name = re.sub(r"^\d{4}-", "", p.get("name") or "")
+        for c in [p] + p.get("elsewhere", []):  # a project on two Macs can wait on you on either
+            if c.get("state") == "Waiting on you" and not c.get("peer_offline"):
+                mach = c.get("from_machine") or merged.get("machine")
+                key = f"wait:{p['id']}" if c is p or not p.get("elsewhere") else f"wait:{p['id']}:{mach}"
+                out[key] = (f"{p['id']} {name} is waiting on you ({mach})", short(c.get("note") or "", 200))
     for j in merged.get("jobs", []):
+        mach = j.get("from_machine") or merged.get("machine")
         if j.get("status") in ("failed", "not loaded") and not j.get("peer_offline"):
-            mach = j.get("from_machine") or merged.get("machine")
             code = f", exit code {j.get('last_exit_code')}" if j.get("status") == "failed" else ""
             out[f"job:{j.get('id')}"] = (f"Job {j.get('id')} {j.get('status')} ({mach})", f"{j.get('status')}{code}")
+        elif j.get("id") in stopped:
+            out[f"stop:{j['id']}"] = (f"Job {j['id']} stopped ({mach})",
+                                      "No longer running: finished or crashed. Check its log.")
     return out
 
 
@@ -1094,15 +1119,21 @@ def serve(cfg: dict) -> None:
         alert_seen = json.loads(alert_file.read_text())
     except (OSError, ValueError):
         alert_seen = {}
+    runs_file = cfg["state_dir"] / "job-runs.json"  # alert_on_stop jobs seen running
+    try:
+        was_running = set(json.loads(runs_file.read_text()))
+    except (OSError, ValueError):
+        was_running = set()
 
     def check_alerts(merged: dict) -> None:
-        nonlocal alert_seen
+        nonlocal alert_seen, was_running
         codes = pushover_codes(cfg) if cfg["alerts_on"] else None
         if not codes:
             state["alerts"] = "off" if not cfg["alerts_on"] else "no Pushover codes"
             return
         sender = is_alert_sender(cfg, merged)
-        conds = alert_conditions(merged)
+        stopped, was_running = stopped_jobs(merged, was_running)
+        conds = alert_conditions(merged, stopped)
         due, alert_seen = alerts_due(conds, alert_seen, time.time(), cfg["alert_after_s"])
         state["alerts"] = "on (this Mac sends)" if sender else "on (another Mac sends)"
         for k in due:
@@ -1113,9 +1144,12 @@ def serve(cfg: dict) -> None:
                     state["alerts"] = f"send failed: {type(e).__name__}: {e}"
                     continue  # retry next cycle
             alert_seen[k]["sent"] = True  # the other Mac's sender handles it if not us
-        tmp = alert_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(alert_seen))
-        os.replace(tmp, alert_file)
+            if k.startswith("stop:"):
+                was_running.discard(k[5:])  # told once; it alerts again only after a new run
+        for f, data in ((alert_file, alert_seen), (runs_file, sorted(was_running))):
+            tmp = f.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data))
+            os.replace(tmp, f)
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: bytes, ctype: str) -> None:

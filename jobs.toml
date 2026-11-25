@@ -7,6 +7,8 @@
 #   label    launchd only: the job's label, as in `launchctl list`
 #   match    script only: regular expression matched against the process command line
 #   log      optional: log file to show the tail of (launchd jobs default to their stdout path)
+#   alert_on_stop  script only: true = phone alert when Orka saw it running and it is gone
+#                  (finished or crashed; Orka can't tell which)
 
 [[job]]
 id      = "backup-dev"
@@ -19,3 +21,13 @@ id      = "tana-vectorsync"
 kind    = "launchd"
 machine = "mba"
 label   = "com.tana.vectorsync"
+
+# Chess (0085) compute on the M1: training, nightly game analysis, benchmarks.
+# Launched from the MBA over SSH (chess BACKLOG R9). Narrow the pattern once the
+# chess project settles its first M1 command.
+[[job]]
+id      = "chess-m1"
+kind    = "script"
+machine = "mbp"
+match   = 'scripts/(train_human|train|analyze_my_games|arena_compare|benchmark|judge_gap)\.py|scripts/(train_human_bands|distill_scaleup|benchmark_series|rerun_band800)\.sh'
+alert_on_stop = true

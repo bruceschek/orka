@@ -65,6 +65,7 @@
   .p-failed, .p-not-loaded { color: var(--fail); background: var(--fail-bg); }
   .line { color: var(--muted); font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; }
   .line b { color: var(--text); font-weight: 600; }
+  .line.dim { opacity: .6; }
   .note { margin-top: 6px; font-size: 14px; overflow-wrap: anywhere; }
   .wait .note { color: var(--wait); font-weight: 600; }
   details { margin-top: 6px; }
@@ -146,13 +147,17 @@ function controls(p) {
 
 function projectCard(p) {
   const g = p.git || {}, pl = p.plans || {}, s = p.session || {};
-  const waiting = p.state === "Waiting on you" && !p.peer_offline;
+  const waiting = [p, ...(p.elsewhere || [])].some(x => x.state === "Waiting on you" && !x.peer_offline);
   const c = el("div", {class: "card" + (waiting ? " wait" : "") + (p.peer_offline ? " offline" : "")},
     el("div", {class: "row"}, el("span", {class: "id"}, p.id), el("span", {class: "name"}, niceName(p) || p.note),
        machTag(p), el("span", {class: "ago"}, p.last_activity_ago || ""), pill(p.state)));
   const off = offlineLine(p);
   if (off) c.append(off);
   if (p.state === "Waiting on you" || (p.sessions || []).length) c.append(el("div", {class: "note"}, p.note));
+  for (const x of p.elsewhere || [])  // the same project's copy on the other Mac
+    c.append(el("div", {class: "line" + (x.peer_offline ? " dim" : "")}, el("b", {}, "on " + x.from_machine + " "),
+      pill(x.state), " ", [x.last_activity_ago, x.peer_offline ? "offline, as of " + agoText(x.as_of) : null,
+                           x.state === "Waiting on you" ? x.note : null].filter(Boolean).join(" · ")));
   for (const x of (p.sessions || []).length > 1 ? p.sessions : [])
     c.append(line("session " + x.id.slice(0, 8), `${x.state} · ${x.last_ago} · ${x.detail}`));
   const bits = [];
@@ -199,7 +204,8 @@ function render() {
   const projects = [...card.projects].sort((a, b) => (ORDER[a.state] ?? 9) - (ORDER[b.state] ?? 9) || a.id.localeCompare(b.id));
   const jobs = card.jobs || [];
   // An offline Mac's data is old, so it never goes under "Needs you".
-  const waiting = projects.filter(p => p.state === "Waiting on you" && !p.peer_offline);
+  const waits = x => x.state === "Waiting on you" && !x.peer_offline;
+  const waiting = projects.filter(p => waits(p) || (p.elsewhere || []).some(waits));
   const failed = jobs.filter(j => (j.status === "failed" || j.status === "not loaded") && !j.peer_offline);
   const needs = document.getElementById("needs");
   needs.replaceChildren(...waiting.map(projectCard), ...failed.map(jobCard));
