@@ -44,6 +44,12 @@
   .mach { font: 600 11px var(--mono); color: var(--muted); border: 1px solid var(--line);
           border-radius: 6px; padding: 0 5px; white-space: nowrap; }
   .card.offline { opacity: .6; }
+  .actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  button { font: 600 13px -apple-system, BlinkMacSystemFont, sans-serif; color: var(--link);
+           background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; }
+  button:disabled { color: var(--muted); }
+  .result { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  .result.bad { color: var(--fail); }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
           padding: 12px 14px; margin: 8px 0; }
   .card.wait { border-color: var(--wait); }
@@ -112,6 +118,32 @@ function offlineLine(x) {
   return x.peer_offline ? line(x.from_machine + " is offline", "· data as of " + agoText(x.as_of)) : null;
 }
 
+async function act(action, p, btn, out) {
+  btn.disabled = true;
+  out.className = "result"; out.textContent = (action === "pause" ? "pausing" : "resuming") + "…";
+  try {
+    const r = await fetch("/api/action", {method: "POST", headers: {"Content-Type": "application/json"},
+                                          body: JSON.stringify({action, project: p.id})});
+    const j = await r.json();
+    out.className = "result" + (j.ok ? "" : " bad");
+    out.textContent = j.ok ? j.result : (j.error || "failed");
+    if (j.ok) setTimeout(load, 1500);
+  } catch (e) {
+    out.className = "result bad"; out.textContent = "no answer from Orka";
+  }
+  btn.disabled = false;
+}
+
+function controls(p) {
+  if (!p.watch_status || (p.state === "Remote" && !p.from_machine)) return null;
+  const action = p.watch_status === "paused" ? "resume" : "pause";
+  const btn = el("button", {type: "button"}, action === "pause" ? "Pause" : "Resume");
+  const out = el("span", {class: "result"});
+  if (p.peer_offline) { btn.disabled = true; out.textContent = p.from_machine + " is off"; }
+  btn.addEventListener("click", () => act(action, p, btn, out));
+  return el("div", {class: "actions"}, btn, out);
+}
+
 function projectCard(p) {
   const g = p.git || {}, pl = p.plans || {}, s = p.session || {};
   const waiting = p.state === "Waiting on you" && !p.peer_offline;
@@ -142,6 +174,8 @@ function projectCard(p) {
     const label = (pl.needs_you || []).length ? `${pl.needs_you.length} waiting in plans · more` : "more";
     c.append(el("details", {}, el("summary", {}, label), more));
   }
+  const ctl = controls(p);
+  if (ctl) c.append(ctl);
   return c;
 }
 

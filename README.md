@@ -78,6 +78,18 @@ Setup on each Mac: put your Pushover User Key and API Token in `~/dev/.orka/push
 `uv run orka.py alert-test --apply`. The phone needs the Pushover app, logged in to the same
 account. If nothing arrives, check that the account lists the phone under "Your Devices".
 
+## Controls (phase 5)
+
+Each project card on the dashboard has a **Pause** or **Resume** button. A paused project
+shows "Paused" and sends no alerts. The Mac that owns the project does it (the other Mac
+passes the request on), updates `watchlist.toml`, commits and pushes it. If the owning Mac
+is off, the button is greyed out.
+
+Only your Tailscale login may use controls. It is listed in `~/dev/.orka/controls.toml` on
+each Mac (private, because this repo is public): `allowed_logins = ["you@example.com"]`.
+Requests from other websites are refused. Every attempt, allowed or not, is logged to
+`~/dev/.orka/actions.jsonl`.
+
 ## New projects and moving them between Macs
 
 Project numbers are one sequence across both Macs, and every project folder has the same
@@ -127,7 +139,7 @@ jobs on both Macs, and lets you control them.
 
 1. Collector and scorecard (done)
 2. Global hooks and event log (done)
-3. Read-only dashboard (`serve`) on the MBA, phone access over Tailscale, `jobs.toml`, `/scorecard` skill (this version)
-4. Orka on the M1; each Mac's dashboard also shows the other Mac. Phone alerts for "waiting on you" and failed jobs.
-5. Controls: pause/resume projects; start/stop/restart jobs; open or start a Claude session in iTerm; nudge a session. Every action logged.
+3. Read-only dashboard (`serve`) on the MBA, phone access over Tailscale, `jobs.toml`, `/scorecard` skill (done)
+4. Orka on the M1; each Mac's dashboard also shows the other Mac. Phone alerts for "waiting on you" and failed jobs. `new`/`clone` with one project numbering for both Macs. (done, 0.5.0)
+5. Controls: pause/resume projects (done, 0.6.0); start/stop/restart jobs; open or start a Claude session in iTerm; nudge a session. Every action logged.
 6. Answer Claude permission requests from the dashboard (with a login); daily digest.

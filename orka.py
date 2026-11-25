@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -45,7 +46,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "orka.toml"
 CONFIG_LOCAL = HERE / "orka.local.toml"  # per-Mac overrides, not in git (e.g. machine = "mbp")
@@ -900,7 +901,8 @@ def merge_peers(card: dict, peers: dict[str, dict], cfg: dict, now: float) -> di
     return out
 
 
-def peer_loop(name: str, url: str, cfg: dict, peers: dict, lock: threading.Lock) -> None:
+def peer_loop(name: str, url: str, cfg: dict, peers: dict, lock: threading.Lock,
+              wake: threading.Event) -> None:
     cache = cfg["state_dir"] / f"peer-{name}.json"
     while True:
         try:
@@ -914,9 +916,11 @@ def peer_loop(name: str, url: str, cfg: dict, peers: dict, lock: threading.Lock)
         except Exception as e:  # off, asleep, or not set up yet: keep the last copy
             with lock:
                 peers[name]["error"] = f"{type(e).__name__}: {e}"
-            time.sleep(min(10, cfg["refresh_s"]))  # retry sooner, so a Mac that wakes shows up fast
+            wake.wait(min(10, cfg["refresh_s"]))  # retry sooner, so a Mac that wakes shows up fast
+            wake.clear()
             continue
-        time.sleep(cfg["refresh_s"])
+        wake.wait(cfg["refresh_s"])  # set early after an action, to show its result sooner
+        wake.clear()
 
 
 # ---------------------------------------------------------------- phone alerts (phase 4)
@@ -976,11 +980,79 @@ def alerts_due(conds: dict, seen: dict, now: float, after_s: int) -> tuple[list[
     return due, new
 
 
+# ---------------------------------------------------------------- controls (phase 5)
+# POST /api/action {"action": "pause"|"resume", "project": "0071"}. The Mac that owns the
+# project does it (others forward the request), edits watchlist.toml, commits and pushes.
+# Allowed: requests via `tailscale serve` whose Tailscale-User-Login is listed in
+# <state_dir>/controls.toml (private: the repo is public), or plain local requests to
+# 127.0.0.1. Browsers can't send cross-site JSON POSTs without a preflight we never answer,
+# and Host/Origin must be ours. Every attempt is logged to <state_dir>/actions.jsonl.
+ACTIONS = ("pause", "resume")
+WATCH_LOCK = threading.Lock()
+
+
+def allowed_logins(cfg: dict) -> list[str]:
+    try:
+        return list(tomllib.loads((cfg["state_dir"] / "controls.toml").read_text()).get("allowed_logins", []))
+    except (OSError, ValueError):
+        return []
+
+
+def log_action(cfg: dict, rec: dict) -> None:
+    with open(cfg["state_dir"] / "actions.jsonl", "a") as f:
+        f.write(json.dumps(rec, default=str) + "\n")
+
+
+def project_owner(cfg: dict, pid: str) -> str | None:
+    """The Mac that should carry out an action on this project: this Mac if it has it."""
+    entry = next((e for e in load_watchlist() if e.get("id") == pid), None)
+    if entry is None:
+        return None
+    machines = entry.get("machine", cfg["machine"])
+    machines = machines if isinstance(machines, list) else [machines]
+    if cfg["machine"] in machines:
+        return cfg["machine"]
+    return next((m for m in machines if m in cfg["peers"]), None)
+
+
+def set_watch_status(pid: str, action: str) -> str:
+    """Pause or resume a project in watchlist.toml, then commit and push it."""
+    with WATCH_LOCK:
+        repo = registry_repo()
+        if repo:
+            sh(["git", "pull", "--ff-only", "-q"], repo)
+        entry = next((e for e in load_watchlist() if e.get("id") == pid), None)
+        if entry is None:
+            raise ValueError(f"{pid} is not on the watchlist")
+        want = "paused" if action == "pause" else "active"
+        if entry.get("status", "active") == want:
+            return f"already {want}"
+        watch([action, pid])
+        if repo:
+            try:
+                registry_push(repo, f"{action.title()} project {pid} (from the dashboard)")
+            except SystemExit:  # the other Mac pushed first: rebase on top and push again
+                sh(["git", "pull", "--rebase", "-q"], repo)
+                sh(["git", "push", "-q"], repo)
+        return want
+
+
+def forward_action(url: str, body: dict) -> dict:
+    req = urllib.request.Request(url.rstrip("/") + "/api/action", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": f"orka/{VERSION}"})
+    try:
+        with urllib.request.urlopen(req, timeout=40) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        return json.load(e)
+
+
 SNAPSHOT_EVERY = 600  # seconds between orka.db history rows while serving
 
 
 def serve(cfg: dict) -> None:
-    """Dashboard + JSON API on 127.0.0.1 only. Read-only in phase 3.
+    """Dashboard + JSON API on 127.0.0.1 only. Controls: POST /api/action (phase 5).
 
     Reach it from other devices with `tailscale serve --bg <port>`, which adds
     HTTPS and lets only your own tailnet devices in.
@@ -996,6 +1068,8 @@ def serve(cfg: dict) -> None:
         except (OSError, ValueError):
             saved = {}
         peers[name] = {"card": saved.get("card"), "last_ok": saved.get("last_ok"), "error": None}
+    wake_collect = threading.Event()
+    wake_peer = {name: threading.Event() for name in cfg["peers"]}
 
     def refresher() -> None:
         last_snap = 0.0
@@ -1012,7 +1086,8 @@ def serve(cfg: dict) -> None:
             except Exception as e:  # keep serving the last good card
                 with lock:
                     state["error"] = f"{type(e).__name__}: {e}"
-            time.sleep(cfg["refresh_s"])
+            wake_collect.wait(cfg["refresh_s"])  # set early after an action
+            wake_collect.clear()
 
     alert_file = cfg["state_dir"] / "alerts.json"
     try:
@@ -1074,12 +1149,81 @@ def serve(cfg: dict) -> None:
             else:
                 self._send(404, b"not found", "text/plain")
 
+        def do_POST(self) -> None:
+            if self.path.split("?", 1)[0] != "/api/action":
+                return self._send(404, b"not found", "text/plain")
+            login = self.headers.get("Tailscale-User-Login")
+            rec = {"ts": iso(time.time()), "machine": cfg["machine"], "viewer": login or "local"}
+            try:
+                body = self._check_and_read(login)
+                rec.update(action=body["action"], project=body["project"], via=body.get("via"))
+                rec["result"] = self._act(body)
+                code, out = 200, {"ok": True, **rec}
+            except PermissionError as e:
+                rec["error"] = str(e)
+                code, out = 403, {"ok": False, "error": str(e)}
+            except (ValueError, KeyError) as e:
+                rec["error"] = str(e)
+                code, out = 400, {"ok": False, "error": str(e)}
+            except (Exception, SystemExit) as e:  # git or the other Mac failed
+                rec["error"] = f"{type(e).__name__}: {e}"
+                code, out = 500, {"ok": False, "error": rec["error"]}
+            log_action(cfg, rec)
+            self._send(code, json.dumps(out, default=str).encode(), "application/json")
+
+        def _check_and_read(self, login: str | None) -> dict:
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
+            local = host in ("127.0.0.1", "localhost")
+            ours = local or host in {urllib.parse.urlparse(u).hostname
+                                     for u in cfg["machine_urls"].values() if u}
+            if not ours:
+                raise PermissionError(f"unexpected Host {host!r}")
+            origin = self.headers.get("Origin")
+            if origin and urllib.parse.urlparse(origin).hostname != host:
+                raise PermissionError("cross-site request")
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
+                raise PermissionError("Content-Type must be application/json")
+            if login is not None:
+                if login not in allowed_logins(cfg):
+                    raise PermissionError("this Tailscale login may not use controls "
+                                          f"(see {cfg['state_dir'] / 'controls.toml'})")
+            elif not local:
+                raise PermissionError("no Tailscale login on a remote request")
+            n = int(self.headers.get("Content-Length") or 0)
+            if not 0 < n <= 10_000:
+                raise ValueError("missing or oversized body")
+            body = json.loads(self.rfile.read(n))
+            if body.get("action") not in ACTIONS or not re.fullmatch(r"\d{4}", str(body.get("project"))):
+                raise ValueError(f"action must be one of {ACTIONS}, project a four-digit id")
+            return body
+
+        def _act(self, body: dict) -> str:
+            pid, owner = body["project"], project_owner(cfg, body["project"])
+            if owner == cfg["machine"]:
+                result = set_watch_status(pid, body["action"])
+                wake_collect.set()
+                return f"{pid} {result} on {owner}"
+            if owner is None:
+                raise ValueError(f"{pid} is not on the watchlist, or lives on a Mac Orka can't reach")
+            if body.get("via"):
+                raise ValueError("already forwarded once; the Macs disagree about the watchlist")
+            with lock:
+                last_ok = peers[owner].get("last_ok")
+            if not last_ok or time.time() - last_ok > peer_offline_after(cfg):
+                raise ValueError(f"{owner} is offline; try again when it is on")
+            r = forward_action(cfg["peers"][owner], dict(body, via=cfg["machine"]))
+            if not r.get("ok"):
+                raise RuntimeError(f"{owner}: {r.get('error')}")
+            wake_peer[owner].set()
+            return r.get("result", "done")
+
         def log_message(self, *args) -> None:  # quiet
             pass
 
     threading.Thread(target=refresher, daemon=True).start()
     for name, url in cfg["peers"].items():
-        threading.Thread(target=peer_loop, args=(name, url, cfg, peers, lock), daemon=True).start()
+        threading.Thread(target=peer_loop, args=(name, url, cfg, peers, lock, wake_peer[name]),
+                         daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", cfg["port"]), Handler)
     print(f"Orka dashboard on http://127.0.0.1:{cfg['port']}  machine={cfg['machine']}  "
           f"peers={', '.join(cfg['peers']) or 'none'}  (Ctrl-C to stop)")

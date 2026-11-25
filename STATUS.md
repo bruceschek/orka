@@ -48,6 +48,15 @@ Bruce's answers (2026-11-24):
       so it can send alerts while the MBA is off. (2026-11-25: MBP runs 0.5.0, reports
       "on (another Mac sends)"; `alert-test --apply` accepted by Pushover.)
 
+## Phase 5: controls
+
+- [x] Pause/resume projects from the dashboard (2026-11-25, 0.6.0). Tested with two fake Macs:
+      local, forwarded to the owning Mac, already-paused, offline owner, and refusals for wrong
+      Content-Type / Origin / Host / login / action. MBA has `~/dev/.orka/controls.toml`.
+- [ ] Restart both agents; MBP also needs `~/dev/.orka/controls.toml` (same login).
+- [ ] Next controls: start/stop/restart jobs; open or start a Claude session in iTerm; nudge a
+      session (keep Orca in mind: it may take over session control).
+
 ## Working notes for Claude
 
 - Bruce wants setup done step by step: one command at a time, checked before the next.
