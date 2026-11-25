@@ -30,6 +30,9 @@ Bruce's answers (2026-11-24):
 - [x] Each Mac's dashboard also shows the other Mac (built 2026-11-24, collector 0.4.0; tested
       with two local `serve`s: both online, MBP off → offline after ~80s, MBA restart keeps the
       MBP's last copy, MBP back on → live again in ~9s).
+- [x] `orka.py new` / `clone` (2026-11-24): one project-number sequence for both Macs, registry
+      in `watchlist.toml` (`last_number = "0103"` set by hand from the MBA's folders).
+- [ ] Bruce: point his `newproj` shell function (in `~/.zshrc`) at `orka.py new --apply`.
 - [ ] Install Orka on the MBP: clone to `~/dev/projects/0102-orka`, create `orka.local.toml`
       with `machine = "mbp"`, hooks, launchd agent, `tailscale serve --bg 8765`; then put the
       MBP's address under `[machines]` in `orka.toml`, commit, and pull on both Macs.

@@ -30,6 +30,8 @@ uv run orka.py events            # last 30 hook events (add a number for more)
 uv run orka.py install-hooks     # preview the hook setup; add --apply to install
 uv run orka.py serve             # dashboard on http://127.0.0.1:8765
 uv run orka.py install-agent     # preview keeping `serve` running at login; add --apply to install
+uv run orka.py new tana graph sync [--machine mbp] [--github]   # preview a new project; add --apply
+uv run orka.py clone 0104        # preview copying a project from GitHub to this Mac; add --apply
 ```
 
 ## Dashboard and phone access (phase 3)
@@ -61,6 +63,23 @@ Either Mac may be off. Its data then stays on the dashboard, dimmed and marked
 (retried every 10 seconds), it is shown as live again by itself.
 
 `/api/scorecard` is the combined view; `/api/local` is this Mac only.
+
+## New projects and moving them between Macs
+
+Project numbers are one sequence across both Macs, and every project folder has the same
+path on each Mac (`~/dev/projects/NNNN-name`). `watchlist.toml` doubles as the number
+registry, so either Mac can start a project even when the other is off.
+
+`orka.py new <name> --apply` pulls Orka's repo, takes the next number (the highest of
+`last_number`, the watchlist and this Mac's folders, plus one), creates the folder with
+`git init`, adds the project to the watchlist and pushes that straight back. With
+`--github` it also creates a private GitHub repo and records its URL as `repo`. With
+`--machine mbp` it only registers the number for the other Mac. The last line printed is
+the new folder, so a shell function can `cd` into it.
+
+`orka.py clone <id> --apply` copies a project from its `repo` to the same folder name on
+this Mac and adds this Mac to the project's `machine` list. Code moves between Macs only
+through GitHub; never sync `~/dev` with Dropbox or iCloud.
 
 ## Hooks (phase 2)
 

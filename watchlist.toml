@@ -8,6 +8,13 @@
 #   alias   short names you can use when you talk to Orka
 #   machine "mba" or "mbp" (or a list, for a project on both Macs)
 #   status  "active" or "paused" (paused = monitored but no alerts)
+#   name    folder name after the number (set by `orka.py new`; needed by `orka.py clone`)
+#   repo    GitHub URL (set by `orka.py new --github`; needed by `orka.py clone`)
+#
+# This file is also the project-number registry for both Macs: `orka.py new` pulls it,
+# takes max(last_number, ids, local folders) + 1, and pushes it straight back.
+
+last_number = "0103"   # highest project number used on any Mac
 
 [[project]]
 id      = "0046"

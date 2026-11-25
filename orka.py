@@ -13,6 +13,8 @@ Usage (from the Orka folder):
   uv run orka.py watch remove 0099
   uv run orka.py watch pause 0099 | resume 0099
   uv run orka.py events [n]         # last n hook events (default 30)
+  uv run orka.py new <name> [--machine mbp] [--github] [--apply]  # next number, folder, watchlist
+  uv run orka.py clone <id> [--apply]     # copy a project from GitHub to the same folder here
   uv run orka.py serve              # dashboard on http://127.0.0.1:8765 (phone: tailscale serve)
   uv run orka.py install-agent [--apply]  # keep `serve` running at login (launchd)
   uv run orka.py install-hooks [--apply]  # add Orka's hook to ~/.claude/settings.json
@@ -665,6 +667,147 @@ def watch(args: list[str]) -> None:
     print(f"watch {cmd} {pid}: done")
 
 
+# ---------------------------------------------------------------- new and clone
+# Project numbers are one sequence across both Macs. The registry is watchlist.toml in
+# Orka's own git repo: `new` pulls it, takes the next number, and pushes it straight
+# back, so either Mac can start a project without the other one being on. Code moves
+# between Macs only through GitHub (`clone`).
+LAST_NUMBER = re.compile(r'^last_number\s*=\s*"(\d{4})"', re.M)
+
+
+def sh(cmd: list[str], cwd: Path | None = None) -> str:
+    """Run a command; stop Orka with its error message if it fails."""
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        sys.exit(f"failed: {' '.join(cmd)}\n{(r.stderr or r.stdout).strip()}")
+    return r.stdout.strip()
+
+
+def registry_repo() -> Path | None:
+    """Orka's git repo if the watchlist is tracked in one with a remote (not in tests)."""
+    top = run(["git", "rev-parse", "--show-toplevel"], WATCHLIST.parent)
+    if top and run(["git", "remote"], WATCHLIST.parent) and \
+            run(["git", "ls-files", "--error-unmatch", WATCHLIST.name], WATCHLIST.parent) is not None:
+        return Path(top)
+    return None
+
+
+def registry_pull(apply: bool) -> Path | None:
+    repo = registry_repo()
+    if repo is None:
+        print("  (watchlist is not in a git repo with a remote: no sync)")
+    elif apply:
+        sh(["git", "pull", "--ff-only", "-q"], repo)
+    return repo
+
+
+def registry_push(repo: Path | None, message: str) -> None:
+    if repo is None:
+        return
+    sh(["git", "add", WATCHLIST.name], WATCHLIST.parent)
+    sh(["git", "commit", "-q", "-m", message, "--", WATCHLIST.name], WATCHLIST.parent)
+    sh(["git", "push", "-q"], repo)
+
+
+def next_number(root: Path) -> str:
+    text = WATCHLIST.read_text() if WATCHLIST.exists() else ""
+    used = [int(e["id"]) for e in load_watchlist() if str(e.get("id", "")).isdigit()]
+    used += [int(m) for m in LAST_NUMBER.findall(text)]
+    used += [int(p.name[:4]) for p in root.glob("[0-9][0-9][0-9][0-9]-*")]
+    return f"{max(used, default=0) + 1:04d}"
+
+
+def slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "project"
+
+
+def new_project(cfg: dict, args: list[str]) -> None:
+    """orka.py new <name ...> [--machine mba] [--github] [--apply]"""
+    apply, github = "--apply" in args, "--github" in args
+    machine = cfg["machine"]
+    if "--machine" in args:
+        i = args.index("--machine")
+        machine, args = args[i + 1], args[:i] + args[i + 2:]
+    name = " ".join(a for a in args if not a.startswith("--")).strip()
+    if not name or "/" in name:
+        sys.exit("usage: orka.py new <project name> [--machine mba|mbp] [--github] [--apply]")
+    root = cfg["projects_root"]
+    print("Orka new project" + ("" if apply else " (preview; add --apply to do it)"))
+    repo = registry_pull(apply)
+    num = next_number(root)
+    folder = root / f"{num}-{name}"
+    print(f"  number:    {num}  (highest used so far +1, from the watchlist and {root})")
+    print(f"  folder:    {folder}" + ("" if machine == cfg["machine"] else f"  (on {machine}, not created here)"))
+    print(f"  watchlist: add {num} \"{name}\", machine {machine}" + (", then push" if repo else ""))
+    if github:
+        print(f"  GitHub:    new private repo {slug(name)}")
+    if not apply:
+        return
+    url = ""
+    if machine == cfg["machine"]:
+        folder.mkdir(parents=True, exist_ok=False)
+        sh(["git", "init", "-q"], folder)
+        if github:
+            sh(["gh", "repo", "create", slug(name), "--private", "--source", str(folder), "--remote", "origin"])
+            url = sh(["git", "remote", "get-url", "origin"], folder)
+    elif github:
+        print("  (GitHub repo not created: run `gh repo create` on the Mac that holds the folder)")
+    text = WATCHLIST.read_text() if WATCHLIST.exists() else ""
+    if LAST_NUMBER.search(text):
+        text = LAST_NUMBER.sub(f'last_number = "{num}"', text)
+    else:  # must sit above the first [[project]] table
+        i = text.find("[[project]]")
+        i = len(text) if i < 0 else i
+        text = text[:i] + f'last_number = "{num}"   # highest project number used on any Mac\n\n' + text[i:]
+    text = text.rstrip("\n") + (
+        f'\n\n[[project]]\nid      = "{num}"\nname    = {json.dumps(name)}\nalias   = []\n'
+        f'machine = "{machine}"\nstatus  = "active"\n' + (f'repo    = "{url}"\n' if url else ""))
+    tomllib.loads(text)  # fail loudly before writing a broken file
+    WATCHLIST.write_text(text)
+    registry_push(repo, f"New project {num}: {name}")
+    print(f"  done{' and pushed' if repo else ''}")
+    if folder.is_dir():
+        print(folder)  # last line: the folder, for a shell function to cd into
+
+
+def clone_project(cfg: dict, args: list[str]) -> None:
+    """orka.py clone <id> [--apply]: copy a project from GitHub to the same folder name here."""
+    apply = "--apply" in args
+    pid = next((a for a in args if re.fullmatch(r"\d{4}", a)), None)
+    if not pid:
+        sys.exit("usage: orka.py clone <four-digit id> [--apply]")
+    print("Orka clone" + ("" if apply else " (preview; add --apply to do it)"))
+    repo = registry_pull(apply)
+    entry = next((e for e in load_watchlist() if e.get("id") == pid), None)
+    if not entry:
+        sys.exit(f"{pid} is not on the watchlist")
+    if not entry.get("repo") or not entry.get("name"):
+        sys.exit(f"{pid} needs `name` and `repo` in watchlist.toml before it can be cloned")
+    folder = cfg["projects_root"] / f"{pid}-{entry['name']}"
+    machines = entry.get("machine", [])
+    machines = machines if isinstance(machines, list) else [machines]
+    print(f"  from:      {entry['repo']}")
+    print(f"  to:        {folder}")
+    if cfg["machine"] not in machines:
+        print(f"  watchlist: machine {machines} -> {machines + [cfg['machine']]}" + (", then push" if repo else ""))
+    if resolve_path(entry, cfg["projects_root"]):
+        sys.exit(f"  stop: a {pid}-* folder already exists here")
+    if not apply:
+        return
+    cfg["projects_root"].mkdir(parents=True, exist_ok=True)
+    sh(["git", "clone", "-q", entry["repo"], str(folder)])
+    if cfg["machine"] not in machines:
+        new = json.dumps(machines + [cfg["machine"]])
+        text = WATCHLIST.read_text()
+        block = re.compile(r'(\[\[project\]\]\nid\s*=\s*"' + pid + r'"\n(?:(?!\[\[project\]\]).*\n?)*)')
+        text = block.sub(lambda m: re.sub(r'machine\s*=\s*.*', f"machine = {new}", m.group(1), count=1), text)
+        tomllib.loads(text)
+        WATCHLIST.write_text(text)
+        registry_push(repo, f"Clone project {pid} to {cfg['machine']}")
+    print("  done")
+    print(folder)
+
+
 # ---------------------------------------------------------------- hook setup
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "PermissionRequest",
                "Notification", "Stop", "StopFailure", "SessionEnd")
@@ -915,6 +1058,10 @@ def main() -> None:
         return serve(cfg)
     if args[0] == "install-agent":
         return install_agent(cfg, "--apply" in args)
+    if args[0] == "new":
+        return new_project(cfg, args[1:])
+    if args[0] == "clone":
+        return clone_project(cfg, args[1:])
     card = collect(cfg)
     out = save(card, cfg)
     if args[0] == "show":
