@@ -54,9 +54,11 @@ status  = "active"
 
 [[project]]
 id      = "0085"
-alias   = ["chess"]
+alias   = ["chess", "c016"]
 machine = "mba"
 status  = "active"
+name    = "chess [c016]"
+repo    = "https://github.com/bruceschek/c016-chess"
 
 [[project]]
 id      = "0090"
