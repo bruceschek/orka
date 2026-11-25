@@ -44,8 +44,9 @@ Bruce's answers (2026-11-24):
       (2026-11-24: MBA runs 0.4.0 and lists the MBP as online.)
 - [x] Phone alerts for "waiting on you" and failed jobs (2026-11-25, Pushover; test message
       reached the iPhone; MBA reports "on (this Mac sends)").
-- [ ] MBP: `git pull`, restart its agent, create `~/dev/.orka/pushover.toml` (same two codes),
-      so it can send alerts while the MBA is off.
+- [x] MBP: `git pull`, restart its agent, create `~/dev/.orka/pushover.toml` (same two codes),
+      so it can send alerts while the MBA is off. (2026-11-25: MBP runs 0.5.0, reports
+      "on (another Mac sends)"; `alert-test --apply` accepted by Pushover.)
 
 ## Working notes for Claude
 
