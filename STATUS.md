@@ -53,12 +53,19 @@ Bruce's answers (2026-11-24):
 - [x] Pause/resume projects from the dashboard (2026-11-25, 0.6.0). Tested with two fake Macs:
       local, forwarded to the owning Mac, already-paused, offline owner, and refusals for wrong
       Content-Type / Origin / Host / login / action. MBA has `~/dev/.orka/controls.toml`.
-- [ ] Restart both agents; MBP also needs `~/dev/.orka/controls.toml` (same login).
+- [x] Restart both agents; MBP also needs `~/dev/.orka/controls.toml` (same login). (Verified
+      2026-11-26: MBP file exists, mode 600, same login as the MBA by fingerprint.)
 - [x] Ready for chess (0085) on the M1 (2026-11-25, 0.7.0): `chess-m1` script job (`machine = "mbp"`,
       `alert_on_stop`), phone alert when it stops, chess card shows the MBP copy ("on mbp" line).
       Tested on fake data and with a test `serve` against the real MBP.
-- [ ] Restart both agents for 0.7.0 (MBP: `git pull` first). Narrow `chess-m1`'s `match` once the
-      chess project picks its first M1 command. Chess-side blockers: Remote Login on the M1 (R9).
+- [x] Restart both agents for 0.7.0 (MBP: `git pull` first). Narrow `chess-m1`'s `match` once the
+      chess project picks its first M1 command. (Both agents restarted on 0.7.0, 2026-11-25.)
+- [x] MBA → M1 SSH without a password (2026-11-25): Remote Login on, MBA key `~/.ssh/id_ed25519`
+      copied with `ssh-copy-id bruces-m1-mbp-2111.taila48a19.ts.net`. Chess R9 can proceed.
+      Non-interactive SSH gets PATH=/usr/bin:/bin (no uv; /usr/bin/git fails on the Xcode license):
+      run remote commands via `zsh -lc "..."`.
+- [ ] Cross-Mac messages to Claude: try built-in `/remote-control` + SendMessage first; fallback
+      `ssh … 'zsh -lc "claude -p …"'`. Not in Orka (session control is Orca's area).
 - [ ] Next controls: start/stop/restart jobs; open or start a Claude session in iTerm; nudge a
       session (keep Orca in mind: it may take over session control).
 
