@@ -12,6 +12,8 @@ The collector uses no AI and no tokens: it only reads files, git and processes. 
 
 **Machines can be off:** the MBA and the M1 are usually on, but either or both can be shut down at any time. Nothing may depend on the other Mac being up: each Mac runs its own Orka, shows the other Mac's last known data marked as offline/stale when it can't be reached, and recovers on its own when it comes back.
 
+**Talking to Claude on the other Mac (decided 2026-11-26):** use Claude Code's built-in cross-session messaging: `/remote-control` on in the sessions on both Macs, then `ListAgents` / `SendMessage`. Orka does not relay messages into sessions (that is session control, Orca's area). Fallback if it falls short: `ssh bruces-m1-mbp-2111.taila48a19.ts.net 'zsh -lc "cd <project> && claude -p …"'` (`-c` to continue). Non-interactive SSH needs `zsh -lc` for PATH (uv, Homebrew git).
+
 **Resuming work? Read `STATUS.md` first:** current stopping point, machine setup to redo, and next steps.
 
 ## Commands
