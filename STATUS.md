@@ -64,7 +64,7 @@ Bruce's answers (2026-11-24):
       copied with `ssh-copy-id bruces-m1-mbp-2111.taila48a19.ts.net`. Chess R9 can proceed.
       Non-interactive SSH gets PATH=/usr/bin:/bin (no uv; /usr/bin/git fails on the Xcode license):
       run remote commands via `zsh -lc "..."`.
-- [ ] Cross-Mac messages to Claude (decided 2026-11-26: built-in): first test of `/remote-control` + SendMessage first; fallback
+- [x] Cross-Mac messages to Claude (decided 2026-11-26: built-in; MBA→M1 round trip tested OK 2026-11-26, reply in ~1 min): first test of `/remote-control` + SendMessage first; fallback
       `ssh … 'zsh -lc "claude -p …"'`. Not in Orka (session control is Orca's area).
 - [ ] Next controls: start/stop/restart jobs; open or start a Claude session in iTerm; nudge a
       session (keep Orca in mind: it may take over session control).
