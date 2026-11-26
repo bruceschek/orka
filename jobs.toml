@@ -29,5 +29,5 @@ label   = "com.tana.vectorsync"
 id      = "chess-m1"
 kind    = "script"
 machine = "mbp"
-match   = 'scripts/(train_human|train|analyze_my_games|arena_compare|benchmark|judge_gap)\.py|scripts/(train_human_bands|distill_scaleup|benchmark_series|rerun_band800)\.sh'
+match   = 'scripts/(train_human|train|analyze_my_games|arena_compare|benchmark|judge_gap|human_baseline)\.py|scripts/(train_human_bands|distill_scaleup|benchmark_series|rerun_band800)\.sh'
 alert_on_stop = true
